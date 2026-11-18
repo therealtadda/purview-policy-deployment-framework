@@ -1,0 +1,160 @@
+# Read-only stage: validate + plan | promote | drift | simulation-report | rollback with the reader identity.
+# 'rollback' downloads the evidence artifact (ppdf-apply-<environment>-<attempt>) of an earlier run and builds a
+# plan that undoes it (offline); the apply stages then gate and apply it like any other plan.
+# Outputs (job 'Plan'): meta.artifact_name and ppdf.{plan_hash,has_changes,blocked,approval_tier,
+# approval_environment,workloads,sim_pass,exit_code}.
+parameters:
+  - name: stageName
+    type: string
+  - name: environment
+    displayName: PPDF environment name (environments/<name>.yml)
+    type: string
+  - name: command
+    type: string
+    default: plan
+    values: [plan, promote, drift, simulation-report, rollback]
+  - name: rollbackRunId
+    displayName: For 'rollback' - run (build) ID whose apply should be undone
+    type: string
+    default: ''
+  - name: rollbackArtifact
+    displayName: For 'rollback' - evidence artifact name; empty = the only ppdf-apply-<environment>-* artifact of that run
+    type: string
+    default: ''
+  - name: rollbackPipelineId
+    displayName: For 'rollback' - pipeline (definition) ID of that run; default is this pipeline
+    type: string
+    default: $(System.DefinitionId)
+  - name: stage
+    displayName: Stage for 'plan'
+    type: string
+    default: auto
+    values: [simulate, enforce, auto]
+  - name: readerServiceConnection
+    type: string
+  - name: frameworkRepository
+    type: string
+    default: ppdf
+  - name: configRoot
+    type: string
+    default: config
+  - name: artifacts
+    displayName: Optional comma-separated artifact names
+    type: string
+    default: ''
+  - name: workloads
+    displayName: Optional comma-separated workloads
+    type: string
+    default: ''
+  - name: failOnBlocked
+    type: boolean
+    default: true
+  - name: dependsOn
+    type: object
+    default: []
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: ${{ parameters.command }} ${{ parameters.environment }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - job: Plan
+        pool: ${{ parameters.pool }}
+        steps:
+          - template: steps-setup.yml
+            parameters:
+              frameworkRepository: ${{ parameters.frameworkRepository }}
+              configRoot: ${{ parameters.configRoot }}
+
+          - pwsh: |
+              & $env:PPDF_CLI validate -Environment '${{ parameters.environment }}' -OutputPath "$(Pipeline.Workspace)/out/validate"
+              exit $LASTEXITCODE
+            displayName: Validate (offline)
+
+          - pwsh: Write-Host "##vso[task.setvariable variable=artifact_name;isOutput=true]ppdf-${{ parameters.command }}-${{ parameters.environment }}-$(System.StageAttempt)"
+            name: meta
+            displayName: Artifact name
+
+          - ${{ if eq(parameters.command, 'rollback') }}:
+              - pwsh: |
+                  if (-not '${{ parameters.rollbackRunId }}') { Write-Host "##vso[task.logissue type=error]rollbackRunId is required for command 'rollback'."; exit 1 }
+                displayName: Check rollback parameters
+
+              # Kept outside $(Pipeline.Workspace)/out, which is published as this run's plan artifact.
+              - task: DownloadPipelineArtifact@2
+                displayName: Download evidence to roll back
+                inputs:
+                  buildType: specific
+                  project: $(System.TeamProjectId)
+                  definition: ${{ parameters.rollbackPipelineId }}
+                  buildVersionToDownload: specific
+                  pipelineId: ${{ parameters.rollbackRunId }}
+                  ${{ if ne(parameters.rollbackArtifact, '') }}:
+                    artifactName: ${{ parameters.rollbackArtifact }}
+                  ${{ else }}:
+                    itemPattern: ppdf-apply-${{ parameters.environment }}-*/**
+                  targetPath: $(Pipeline.Workspace)/rollback-source
+
+              - pwsh: |
+                  # Each workload is applied in its own step: one apply-<workload>/evidence/ folder per workload,
+                  # all for the same plan.
+                  $ev = @(Get-ChildItem "$(Pipeline.Workspace)/rollback-source" -Recurse -Directory -Filter evidence)
+                  if (-not $ev) { Write-Host '##vso[task.logissue type=error]No evidence folders in the downloaded artifact.'; exit 1 }
+                  $dupes = @($ev | Group-Object { $_.Parent.Name } | Where-Object Count -gt 1)
+                  if ($dupes) { Write-Host '##vso[task.logissue type=error]That run has more than one apply attempt for this environment; set rollbackArtifact.'; exit 1 }
+                  $plans = @($ev | ForEach-Object { Get-ChildItem $_.FullName -File | Where-Object Name -in 'plan.json', 'promote.json', 'drift.json', 'rollback-plan.json' | Select-Object -First 1 })
+                  if ($plans.Count -ne $ev.Count) { Write-Host '##vso[task.logissue type=error]An evidence folder has no plan document.'; exit 1 }
+                  if (@($plans | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash } | Select-Object -Unique).Count -ne 1) { Write-Host '##vso[task.logissue type=error]Evidence folders contain different plans.'; exit 1 }
+                  $planEnv = (Get-Content -LiteralPath $plans[0].FullName -Raw | ConvertFrom-Json).environment
+                  if ($planEnv -ne '${{ parameters.environment }}') { Write-Host "##vso[task.logissue type=error]The evidence is for environment '$planEnv', not '${{ parameters.environment }}'."; exit 1 }
+                  $results = @($ev | ForEach-Object { Join-Path $_.FullName 'apply-result.json' } | Where-Object { Test-Path $_ })
+                  Write-Host "##vso[task.setvariable variable=PPDF_RB_PLAN]$($plans[0].FullName)"
+                  Write-Host "##vso[task.setvariable variable=PPDF_RB_RESULTS]$($results -join ',')"
+                displayName: Locate applied plan and results
+
+          - template: steps-ppdf.yml
+            parameters:
+              serviceConnection: ${{ parameters.readerServiceConnection }}
+              displayName: ${{ parameters.command }} (reader identity)
+              ${{ if parameters.failOnBlocked }}:
+                successExitCodes: [0, 2]
+              ${{ else }}:
+                successExitCodes: [0, 2, 3]
+              ${{ if eq(parameters.command, 'rollback') }}:
+                arguments:
+                  - rollback
+                  - -PlanPath
+                  - $(PPDF_RB_PLAN)
+                  - -ApplyResultPath
+                  - $(PPDF_RB_RESULTS)
+                  - -OutputPath
+                  - $(Pipeline.Workspace)/out/plan
+              ${{ else }}:
+                arguments:
+                  - ${{ parameters.command }}
+                  - -Environment
+                  - ${{ parameters.environment }}
+                  - -OutputPath
+                  - $(Pipeline.Workspace)/out/plan
+                  - ${{ if eq(parameters.command, 'plan') }}:
+                      - -Stage
+                      - ${{ parameters.stage }}
+                  - ${{ if ne(parameters.artifacts, '') }}:
+                      - -Artifact
+                      - ${{ parameters.artifacts }}
+                  - ${{ if ne(parameters.workloads, '') }}:
+                      - -Workload
+                      - ${{ parameters.workloads }}
+
+          - publish: $(Pipeline.Workspace)/out
+            artifact: $(meta.artifact_name)
+            displayName: Publish plan
+            condition: always()

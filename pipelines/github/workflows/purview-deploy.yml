@@ -1,0 +1,118 @@
+# Example caller workflow for a configuration repository (copy to .github/workflows/ in your config repo).
+#
+#   push to main  -> dev: plan (simulate) -> approval -> apply  -> test: plan -> approval -> apply
+#   manual run    -> any environment/command, e.g. promote prod from simulation to enforcement
+#
+# GitHub environments to create (names must match approvals.pattern in each environment file):
+#   dev-read, test-read, prod-read                         reader identity, no reviewers, branch policy: main
+#   {dev,test,prod}-{low,standard,elevated,critical}       deployer identities, required reviewers,
+#                                                          prevent self-review, branch policy: main
+# Pin 'uses:' and framework-ref to the same release tag or commit SHA.
+name: purview-deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ['config/**']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: PPDF environment
+        type: choice
+        options: [dev, test, ring-pilot, prod]
+        default: dev
+      command:
+        description: plan = deploy current stage; promote = simulate -> enforce with simulation evidence; drift = remediate drift; rollback = undo an earlier apply run
+        type: choice
+        options: [plan, promote, drift, rollback]
+        default: plan
+      stage:
+        description: Stage for 'plan'
+        type: choice
+        options: [simulate, enforce, auto]
+        default: simulate
+      rollback-run-id:
+        description: For 'rollback' - run ID of the workflow run whose apply should be undone (from its URL)
+        type: string
+        default: ''
+      rollback-artifact:
+        description: For 'rollback' - evidence artifact name, only if that run applied more than once (ppdf-evidence-<env>-<run>-<attempt>)
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: purview-${{ github.event.inputs.environment || 'rings' }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------- manual run ----------
+  manual-plan:
+    if: github.event_name == 'workflow_dispatch'
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    # actions: read lets 'rollback' download the evidence artifact of an earlier run.
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: ${{ inputs.environment }}
+      # ring-pilot shares the prod tenant and identities, so it uses the prod reader environment.
+      github-environment: ${{ inputs.environment == 'ring-pilot' && 'prod' || inputs.environment }}-read
+      command: ${{ inputs.command }}
+      stage: ${{ inputs.stage }}
+      rollback-run-id: ${{ inputs.rollback-run-id }}
+      rollback-artifact: ${{ inputs.rollback-artifact }}
+      framework-ref: main
+
+  manual-apply:
+    needs: manual-plan
+    if: needs.manual-plan.outputs.has_changes == 'true' && needs.manual-plan.outputs.blocked == 'false'
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-apply.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: ${{ inputs.environment }}
+      approval-environment: ${{ needs.manual-plan.outputs.approval_environment }}
+      approval-tier: ${{ needs.manual-plan.outputs.approval_tier }}
+      plan-artifact: ${{ needs.manual-plan.outputs.artifact_name }}
+      plan-hash: ${{ needs.manual-plan.outputs.plan_hash }}
+      framework-ref: main
+
+  # ---------- ring rollout on merge ----------
+  dev-plan:
+    if: github.event_name == 'push'
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with: { environment: dev, github-environment: dev-read, stage: auto, framework-ref: main }
+
+  dev-apply:
+    needs: dev-plan
+    if: needs.dev-plan.outputs.has_changes == 'true' && needs.dev-plan.outputs.blocked == 'false'
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-apply.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: dev
+      approval-environment: ${{ needs.dev-plan.outputs.approval_environment }}
+      approval-tier: ${{ needs.dev-plan.outputs.approval_tier }}
+      plan-artifact: ${{ needs.dev-plan.outputs.artifact_name }}
+      plan-hash: ${{ needs.dev-plan.outputs.plan_hash }}
+      framework-ref: main
+
+  test-plan:
+    needs: [dev-plan, dev-apply]
+    # Continue when dev had nothing to apply (skipped) but stop if dev apply failed or was rejected.
+    if: always() && needs.dev-plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.dev-apply.result)
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with: { environment: test, github-environment: test-read, stage: simulate, framework-ref: main }
+
+  test-apply:
+    needs: test-plan
+    if: always() && needs.test-plan.result == 'success' && needs.test-plan.outputs.has_changes == 'true' && needs.test-plan.outputs.blocked == 'false'
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-apply.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: test
+      approval-environment: ${{ needs.test-plan.outputs.approval_environment }}
+      approval-tier: ${{ needs.test-plan.outputs.approval_tier }}
+      plan-artifact: ${{ needs.test-plan.outputs.artifact_name }}
+      plan-hash: ${{ needs.test-plan.outputs.plan_hash }}
+      framework-ref: main

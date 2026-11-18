@@ -1,0 +1,85 @@
+# One environment = a read-only plan stage + one gated apply stage per approval tier (only the tier the plan
+# requires runs). Stage names: Plan_<id> and Apply_<id>_<tier>; a later environment should depend on all of them
+# (see examples/azure-pipelines.yml).
+parameters:
+  - name: id
+    displayName: Stage-safe identifier (letters, digits, underscore), e.g. ring_pilot
+    type: string
+  - name: environment
+    type: string
+  - name: approvalEnvironmentPrefix
+    type: string
+  - name: readerServiceConnection
+    type: string
+  - name: serviceConnections
+    type: object
+  - name: command
+    type: string
+    default: plan
+  - name: stage
+    type: string
+    default: auto
+  - name: rollbackRunId
+    type: string
+    default: ''
+  - name: rollbackArtifact
+    type: string
+    default: ''
+  - name: rollbackPipelineId
+    type: string
+    default: $(System.DefinitionId)
+  - name: artifacts
+    type: string
+    default: ''
+  - name: workloads
+    type: string
+    default: ''
+  - name: tiers
+    type: object
+    default: [low, standard, elevated, critical]
+  - name: dependsOn
+    type: object
+    default: []
+  - name: frameworkRepository
+    type: string
+    default: ppdf
+  - name: configRoot
+    type: string
+    default: config
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+
+stages:
+  - template: stage-plan.yml
+    parameters:
+      stageName: Plan_${{ parameters.id }}
+      environment: ${{ parameters.environment }}
+      command: ${{ parameters.command }}
+      stage: ${{ parameters.stage }}
+      rollbackRunId: ${{ parameters.rollbackRunId }}
+      rollbackArtifact: ${{ parameters.rollbackArtifact }}
+      rollbackPipelineId: ${{ parameters.rollbackPipelineId }}
+      artifacts: ${{ parameters.artifacts }}
+      workloads: ${{ parameters.workloads }}
+      readerServiceConnection: ${{ parameters.readerServiceConnection }}
+      frameworkRepository: ${{ parameters.frameworkRepository }}
+      configRoot: ${{ parameters.configRoot }}
+      pool: ${{ parameters.pool }}
+      dependsOn: ${{ parameters.dependsOn }}
+      # Previous environment's apply stages are skipped when nothing (or another tier) applied; only stop on failure.
+      ${{ if gt(length(parameters.dependsOn), 0) }}:
+        condition: and(not(failed()), not(canceled()))
+
+  - ${{ each tier in parameters.tiers }}:
+      - template: stage-apply.yml
+        parameters:
+          stageName: Apply_${{ parameters.id }}_${{ tier }}
+          planStageName: Plan_${{ parameters.id }}
+          environment: ${{ parameters.environment }}
+          tier: ${{ tier }}
+          approvalEnvironmentPrefix: ${{ parameters.approvalEnvironmentPrefix }}
+          serviceConnections: ${{ parameters.serviceConnections }}
+          frameworkRepository: ${{ parameters.frameworkRepository }}
+          pool: ${{ parameters.pool }}

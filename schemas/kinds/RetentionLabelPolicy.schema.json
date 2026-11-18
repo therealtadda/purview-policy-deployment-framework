@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/RetentionLabelPolicy.schema.json",
+  "title": "RetentionLabelPolicy spec",
+  "description": "Publishes or auto-applies retention labels.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "required": [
+        "locations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "comment": {
+          "type": "string",
+          "maxLength": 900
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "locations": {
+          "type": "object",
+          "description": "Location parameters, e.g. ExchangeLocation: [All]. Keys ending in 'Exception' are exclusions.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z]+(Location|LocationException)$"
+          },
+          "additionalProperties": {
+            "type": [
+              "array",
+              "string"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Additional cmdlet parameters passed through verbatim (PascalCase)."
+        },
+        "publishLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "autoApply": {
+          "type": "object",
+          "required": [
+            "label"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "contentMatchQuery": {
+              "type": "string"
+            },
+            "sensitiveInformationTypes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "minCount": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ]
+                  },
+                  "maxCount": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ]
+                  },
+                  "minConfidence": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ]
+                  },
+                  "maxConfidence": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

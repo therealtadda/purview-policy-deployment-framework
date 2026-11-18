@@ -1,0 +1,327 @@
+TOPIC
+    about_PurviewIaC
+
+SHORT DESCRIPTION
+    How the Purview Policy Deployment Framework (PPDF) works: configuration,
+    the plan / simulate / approve / enforce lifecycle, approval tiers,
+    identities, ownership, exit codes and environment variables.
+
+LONG DESCRIPTION
+    PPDF manages Microsoft Purview configuration (DLP policies, retention,
+    custom sensitive information types and role assignments) as code. You
+    describe the desired state in YAML files; PPDF compares it with the
+    tenant, produces a reviewable plan, and applies the approved plan with a
+    least-privilege identity per workload. Changes are deployed in a
+    simulation (test) mode first, measured, and only then promoted to
+    enforcement after a human approves.
+
+    The module is orchestrator-agnostic. The same commands run from a
+    terminal, GitHub Actions, Azure DevOps or Terraform; the pipelines only
+    decide when to run them and who approves.
+
+COMMANDS
+    Invoke-PpdfValidate          Offline checks of the configuration. No
+                                 sign-in.
+    Invoke-PpdfPlan              Read-only: what would change, and which
+                                 approval tier it needs.
+    Invoke-PpdfApply             Apply an approved plan (verifies its hash).
+    Invoke-PpdfSimulationReport  Read-only: measure what simulated policies
+                                 would have done, against thresholds.
+    Invoke-PpdfPromote           Plan the switch from simulation to
+                                 enforcement, using a passing report.
+    Invoke-PpdfDrift             Read-only: detect changes made outside PPDF.
+    Invoke-PpdfExport            Read-only: write existing tenant config out
+                                 as artifact files (brownfield onboarding).
+    Invoke-PpdfRollback          Plan the reverse of a previous apply.
+    Get-PpdfKind                 List the supported artifact kinds.
+
+    The CLI wrapper exposes the same commands for any orchestrator:
+
+        pwsh ./cli/ppdf.ps1 help
+        pwsh ./cli/ppdf.ps1 plan -Environment dev -OutputPath ./out/dev
+
+THE LIFECYCLE
+    1. Validate   Invoke-PpdfValidate -Environment dev
+                  Schema, references, guardrails. Runs on every pull request.
+
+    2. Plan       Invoke-PpdfPlan -Environment dev -Stage simulate
+                  Writes plan.json, plan.json.sha256 and plan.md. Exit code
+                  2 means there are changes waiting for approval.
+
+    3. Approve    A person approves the plan in the orchestrator's approval
+                  gate named in plan.md (for example dev-standard). They are
+                  approving the plan hash, not the branch.
+
+    4. Apply      Invoke-PpdfApply -PlanPath ./out/dev/plan.json
+                      -ExpectedPlanHash <hash> -ApprovedTier standard
+                  Policies are now deployed in simulation (test) mode.
+
+    5. Soak and measure
+                  Invoke-PpdfSimulationReport -Environment dev
+                  Reads Activity Explorer / test results for the simulated
+                  policies and compares them with thresholds. Re-run until
+                  every artifact is 'pass'. Activity data can lag.
+
+    6. Promote    Invoke-PpdfPromote -Environment dev
+                      -SimulationReportPath ./out/dev/simulation-report.json
+                  A plan to switch the simulated artifacts to enforcement,
+                  accepted only for artifacts whose report status is 'pass'
+                  for exactly the same config (sha).
+
+    7. Approve and apply the promotion plan (usually an elevated tier).
+
+    8. Operate    Invoke-PpdfDrift on a schedule; Invoke-PpdfRollback to
+                  undo a bad apply (in the example pipelines: the
+                  'rollback' command with the run ID of that deployment);
+                  Invoke-PpdfExport to onboard existing configuration.
+
+    Repeat per environment (dev, test, prod) or ring (pilot, broad).
+
+CONFIGURATION LAYOUT
+    <ConfigRoot>/                 -ConfigRoot, $env:PPDF_CONFIG_ROOT or ./config
+      environments/<name>.yml     one per tenant or ring
+      artifacts/**/<file>.yml     one per Purview object; any folder layout
+
+    Files may be .yml, .yaml or .json. Files under artifacts/ that do not
+    declare apiVersion: ppdf.purview/v1 (for example a SIT test corpus
+    manifest) are ignored.
+
+    Environment (abridged):
+
+        apiVersion: ppdf.purview/v1
+        kind: Environment
+        metadata: { name: prod }              # must match the file name
+        spec:
+          tenant:
+            tenantId: <guid>
+            organization: contoso.onmicrosoft.com
+            cloud: Commercial                 # GCC, GCCHigh, DoD
+          workloads: [dlp, retention]         # default: all
+          identities:                         # one app per role
+            reader:     { clientId: <guid> }  # required
+            dlp:        { clientId: <guid> }
+            retention:  { clientId: <guid>, authMode: certificate,
+                          certificateThumbprint: <thumbprint> }
+          variables:  { financeGroup: finance@contoso.onmicrosoft.com }
+          ring:                               # single-tenant rings only
+            name: pilot
+            locationOverrides:
+              ExchangeLocation: [pilot@contoso.onmicrosoft.com]
+          simulation:
+            dlpMode: TestWithoutNotifications
+            minSoakHours: 168
+            maxReportAgeHours: 48
+            lookbackDays: 7
+            thresholds:
+              DlpPolicy: { maxMatchesPerDay: 2000 }
+          approvals:
+            pattern: "{env}-{tier}"           # approval environment names
+            maxPlanAgeHours: 12
+          guardrails:
+            entraRoleAllowlist: [<role template id>]
+            entraPrincipalAllowlist: [<object id>]
+            sensitiveRoleGroupRoles: [Information Protection Admin]
+          allowDestructive: false
+
+    Artifact envelope (every kind):
+
+        apiVersion: ppdf.purview/v1
+        kind: DlpPolicy                       # see Get-PpdfKind
+        metadata:
+          name: PPDF-Finance-PCI              # the object name in Purview
+          environments: [test, prod]          # optional; default all
+          ensure: present                     # or absent to delete
+          adopt: false                        # true to take over an
+                                              # existing unmanaged object
+          riskTier: standard                  # minimum approval tier
+          ringOverrides: true
+        spec: { ... }                         # kind-specific
+        simulation:
+          skip: false                         # true needs critical approval
+          scope: { ... }                      # locations while simulating
+          thresholds: { maxMatchesPerDay: 500 }
+
+    ${name} in an artifact is replaced with spec.variables.name from the
+    environment; ${env:NAME} with the process environment variable NAME. A
+    missing variable is a validation error. The JSON Schemas in schemas/
+    describe every property; point your editor at them for completion.
+
+STAGES AND SIMULATION
+    Every apply happens at a stage, recorded in the object's ownership tag:
+
+    simulate  Policies are deployed but not enforced. How depends on the
+              kind's simulation strategy (Get-PpdfKind):
+                mode    DLP / retention policies in test mode.
+                corpus  SIT rule packages are tested against a labelled
+                        corpus of sample files.
+                whatif  No simulation exists (role groups, Entra roles,
+                        label policies). The plan is the preview; the
+                        change is 'deferred' and applied at enforce.
+                none    Inert objects (retention labels) that have no effect
+                        until a policy uses them.
+    enforce   Policies are enforced. Kinds that require simulation evidence
+              can only reach this stage through Invoke-PpdfPromote.
+    auto      Keep every object at its current stage. Used by drift and
+              adoption; never switches a live policy to test mode.
+
+    Changing a DLP policy that is already enforced does not put it back in
+    test mode. PPDF simulates the change in a shadow copy named
+    <name>-ppdfsim and removes the copy after promotion.
+
+APPROVAL TIERS
+    Each action in a plan gets a tier; the plan's tier is the highest.
+
+        low       no changes, or no-risk changes
+        standard  create or update (simulation stage)
+        elevated  enforcing a policy; adopting an existing object;
+                  deleting a child object (for example a rule); deferred
+                  changes that could not be simulated; any rollback
+        critical  deleting a top-level object; skipping simulation;
+                  privileged Entra roles or permanent active assignments;
+                  role groups holding sensitive roles
+
+    metadata.riskTier raises the minimum tier for an artifact. The plan
+    names an approval environment, by default "{env}-{tier}" (for example
+    prod-elevated). Create those environments in GitHub (Environments) or
+    Azure DevOps (Environments with approvals and checks) with the right
+    approvers; in Terraform Cloud the tier is approved by changing
+    approved_tier in a pull request. Invoke-PpdfApply -ApprovedTier refuses
+    any plan whose tier is higher than the gate that approved it.
+
+    Blocked actions are refused at any tier. Fix the cause and plan again:
+      * an existing unmanaged object without metadata.adopt: true
+      * an object owned by a different artifact
+      * enforcing without a passing simulation report for this config
+      * deleting an orphan without allowDestructive or ensure: absent
+      * guardrail violations (Entra role or principal not allowlisted)
+
+PLAN INTEGRITY
+    plan.json.sha256 holds the plan hash. Approvers approve that hash; apply
+    recomputes it and refuses a plan that was changed. Apply also refuses
+    plans older than approvals.maxPlanAgeHours (default 24) and, per
+    identity group, re-reads every object first: if anything changed since
+    the plan was made, that group is skipped as 'stale' and you plan again.
+
+IDENTITIES
+    Each workload has its own Entra application with only the roles it
+    needs; plan, report, drift and export use a read-only 'reader' app.
+
+        Role        Used by                      Typical permissions
+        reader      plan, report, drift, export  view-only compliance roles
+        dlp         apply DlpPolicy              DLP compliance management
+        retention   apply Retention*             Retention management
+        classifier  apply SIT rule packages      SIT management
+        rbac        apply RoleGroup / Entra      Role management, PIM
+
+    Authentication (spec.identities.<role>.authMode):
+        federated           Default. Workload identity federation (no
+                            secret). Token taken from, in order:
+                            PPDF_FEDERATED_TOKEN, GitHub Actions OIDC,
+                            AzureCLI@2 idToken, Azure DevOps OIDC (needs
+                            adoServiceConnectionId), Terraform Cloud
+                            TFC_WORKLOAD_IDENTITY_TOKEN,
+                            AZURE_FEDERATED_TOKEN_FILE.
+        managedidentity-fic Self-hosted runners: a user-assigned managed
+                            identity (managedIdentityClientId) is trusted
+                            as a federated credential of the app.
+        certificate         No OIDC available. certificateThumbprint or
+                            certificatePath (or PPDF_CERT_* variables);
+                            keep the certificate in Key Vault.
+        interactive         Local testing only.
+
+    See identities/README.md and docs/identities.md for how to create the
+    identities (Terraform, PowerShell, Entra Agent ID) and which type to
+    use where.
+
+OWNERSHIP AND ADOPTION
+    PPDF stamps every object it manages with a tag in its Comment or
+    Description:
+
+        [ppdf:v1 id=DlpPolicy/PPDF-Finance-PCI sha=1a2b3c4d stage=simulate
+         ts=...]
+
+    It only changes objects carrying its own tag. Existing objects with no
+    tag are 'unmanaged' and are blocked until the artifact sets
+    metadata.adopt: true; the first apply then tags them. Do not edit or
+    remove the tag in the portal. Tagged objects whose artifact was deleted
+    from config are 'orphans' and are only deleted when allowed.
+
+OUTPUT FILES
+    <OutputPath> (default ./out) receives:
+        validation.json                          from validate
+        plan.json (+ .sha256), plan.md           from plan / promote
+        rollback-plan.json (+ .sha256), .md      from rollback
+        apply-result.json (+ .sha256), .md       from apply
+        evidence/ + manifest.json                apply evidence bundle
+        simulation-report.json (+ .sha256), .md  from simulation-report
+        drift.json (+ .sha256), drift.md         from drift
+        ppdf-<command>.log.jsonl                 structured run log
+
+    In GitHub Actions and Azure DevOps the commands also set step outputs
+    (plan_path, plan_hash, has_changes, blocked, approval_tier,
+    approval_environment, workloads, apply_result_path, evidence_path,
+    sim_report_path, sim_report_hash, sim_pass, drift_detected,
+    ppdf_exit_code) and add the .md summary to the job.
+
+EXIT CODES
+    0  Success; nothing to do.
+    1  Error (configuration, sign-in, service or apply failure).
+    2  Success with pending work: the plan has changes, or drift was
+       detected.
+    3  Refused, blocked or not ready: blocked actions, tier above
+       -ApprovedTier, plan too old, stale objects, hash mismatch, or a
+       simulation report that is not passing.
+
+    Each command's help (Get-Help <command> -Full) lists its exact codes.
+
+ENVIRONMENT VARIABLES
+    PPDF_CONFIG_ROOT       Default for -ConfigRoot.
+    PPDF_SKIP_CONNECT      1 = reuse the existing session (as
+                           -UseExistingConnection).
+    PPDF_SCHEMA_PATH       Folder with the JSON Schemas, if not next to the
+                           module.
+    PPDF_YAMLDOTNET_PATH   Path to YamlDotNet.dll when the powershell-yaml
+                           module is not installed.
+    PPDF_FEDERATED_TOKEN   Explicit federated token (any orchestrator).
+    PPDF_CERT_THUMBPRINT, PPDF_CERT_PATH, PPDF_CERT_PASSWORD
+                           Certificate auth fallbacks.
+    PPDF_MODULE_PATH       CLI only: module to import.
+    PPDF_RESULT_PATH       CLI only: also write the result object as JSON.
+
+PREREQUISITES
+    PowerShell 7.4+, ExchangeOnlineManagement 3.8+ (Security & Compliance
+    PowerShell; 3.8 adds the access-token sign-in used by federated
+    identities), Microsoft.Graph.Authentication 2.x for Entra role
+    assignments, and powershell-yaml (or YamlDotNet) for YAML config.
+
+EXAMPLES
+    List the supported kinds and how each one is simulated:
+        Get-PpdfKind | Format-Table Name, Workload, SimulationStrategy
+
+    A local dry run with your own session (no change is made):
+        Connect-IPPSSession -UserPrincipalName admin@contoso.onmicrosoft.com
+        Invoke-PpdfPlan -Environment dev -UseExistingConnection
+        Get-Content ./out/plan.md
+
+    The simulate-to-enforce loop for one environment:
+        $p = Invoke-PpdfPlan -Environment test -Stage simulate
+        # ...approval for $p.ApprovalEnvironment...
+        Invoke-PpdfApply -PlanPath $p.PlanPath -ExpectedPlanHash $p.PlanHash `
+            -ApprovedTier $p.ApprovalTier
+        # ...soak...
+        $r = Invoke-PpdfSimulationReport -Environment test
+        $q = Invoke-PpdfPromote -Environment test `
+            -SimulationReportPath $r.ReportPath
+        # ...approval...
+        Invoke-PpdfApply -PlanPath $q.PlanPath -ExpectedPlanHash $q.PlanHash `
+            -ApprovedTier $q.ApprovalTier
+
+NOTE
+    Items marked "verify" in docs/ (for example exact role names or service
+    limits) are based on current Microsoft documentation and should be
+    confirmed in your tenant before production use.
+
+SEE ALSO
+    Get-Help Invoke-PpdfPlan -Full
+    README.md, docs/, identities/README.md
+    https://github.com/therealtadda/purview-policy-deployment-framework

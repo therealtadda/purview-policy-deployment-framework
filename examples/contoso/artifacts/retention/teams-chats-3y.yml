@@ -1,0 +1,16 @@
+# Org-wide retention policy: retain Teams chats for 3 years, then delete.
+apiVersion: ppdf.purview/v1
+kind: RetentionPolicy
+metadata:
+  name: PPDF-Teams-Chats-3y
+  description: Retain Teams chats for 3 years
+  owner: records-management@contoso.com
+  riskTier: elevated
+spec:
+  comment: Managed by PPDF.
+  enabled: true
+  locations:
+    TeamsChatLocation: All
+  rule:
+    retentionDuration: 1095
+    retentionComplianceAction: KeepAndDelete

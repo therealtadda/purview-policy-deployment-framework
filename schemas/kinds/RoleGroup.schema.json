@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/RoleGroup.schema.json",
+  "title": "RoleGroup spec",
+  "description": "Purview (Security & Compliance) role group, or membership of an existing one.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "UPN, object ID, app ID or service principal name."
+        },
+        "membersMode": {
+          "enum": [
+            "authoritative",
+            "additive"
+          ],
+          "default": "authoritative"
+        },
+        "membershipOnly": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

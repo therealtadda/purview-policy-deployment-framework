@@ -1,0 +1,35 @@
+# Production tenant, full scope. Promotion here requires simulation evidence from the same tenant.
+apiVersion: ppdf.purview/v1
+kind: Environment
+metadata:
+  name: prod
+  description: Contoso production tenant
+spec:
+  tenant:
+    tenantId: 00000000-0000-0000-0000-000000000000
+    organization: contoso.onmicrosoft.com
+  identities:
+    reader:     { clientId: 00000000-0000-0000-0000-000000000021 }
+    dlp:        { clientId: 00000000-0000-0000-0000-000000000022 }
+    retention:  { clientId: 00000000-0000-0000-0000-000000000023 }
+    classifier: { clientId: 00000000-0000-0000-0000-000000000024 }
+    rbac:       { clientId: 00000000-0000-0000-0000-000000000025 }
+  variables:
+    financeGroup: finance@contoso.onmicrosoft.com
+    complianceAdmins: [compliance-admins@contoso.onmicrosoft.com]
+  simulation:
+    minSoakHours: 168
+    maxReportAgeHours: 48
+    thresholds:
+      DlpPolicy: { maxMatchesPerDay: 2000, maxDistinctUsers: 1000 }
+      SensitiveInfoTypeRulePackage: { minPrecision: 0.95, minRecall: 0.9 }
+  approvals:
+    pattern: "prod-{tier}"
+    maxPlanAgeHours: 12
+  guardrails:
+    entraRoleAllowlist:
+      - 17315797-102d-40b4-93e0-432062caca18 # Compliance Administrator
+    entraPrincipalAllowlist:
+      - 00000000-0000-0000-0000-0000000000aa # Compliance admins group (role-assignable)
+    sensitiveRoleGroupRoles: [Information Protection Admin]
+  allowDestructive: false

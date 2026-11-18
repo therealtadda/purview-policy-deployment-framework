@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/SensitiveInfoTypeRulePackage.schema.json",
+  "title": "SensitiveInfoTypeRulePackage spec",
+  "description": "Custom sensitive information type rule package (XML), validated against a labelled test corpus.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "required": [
+        "rulePackFile",
+        "testCorpusFile"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rulePackFile": {
+          "type": "string",
+          "description": "Path (relative to the artifact file) of the rule package XML."
+        },
+        "testCorpusFile": {
+          "type": "string",
+          "description": "Path of the corpus manifest (YAML/JSON): cases: [{name, text|file, expect: [entity names]}]."
+        },
+        "compareContent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Detect out-of-band edits by content hash, not only version."
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

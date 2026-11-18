@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/EntraRoleAssignment.schema.json",
+  "title": "EntraRoleAssignment spec",
+  "description": "Entra ID directory role assignment (PIM eligible or active), restricted by environment guardrails.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "required": [
+        "principalId",
+        "roleDefinitionId"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "principalId": {
+          "type": "string"
+        },
+        "roleDefinitionId": {
+          "type": "string"
+        },
+        "directoryScopeId": {
+          "type": "string",
+          "default": "/"
+        },
+        "assignmentType": {
+          "enum": [
+            "eligible",
+            "active"
+          ],
+          "default": "eligible"
+        },
+        "duration": {
+          "type": "string",
+          "default": "P365D",
+          "description": "ISO 8601 duration or 'permanent'."
+        },
+        "justification": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "ticket": {
+          "type": "string",
+          "description": "Change ticket number recorded in the PIM request ticketInfo."
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

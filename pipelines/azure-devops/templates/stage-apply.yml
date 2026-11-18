@@ -1,0 +1,115 @@
+# Apply stage for ONE approval tier. Azure DevOps resolves deployment-job environments at compile time, so the
+# caller emits one of these per tier and exactly one runs: the one whose tier equals the plan's approval_tier.
+# Human-in-the-loop: the Azure DevOps environment '<approvalEnvironmentPrefix>-<tier>' carries Approvals
+# (and optionally Business hours / Exclusive lock / Required template checks). The approver reviews the plan
+# artifact and summary of the plan stage; the apply then refuses to run unless the plan hash matches.
+parameters:
+  - name: stageName
+    type: string
+  - name: planStageName
+    type: string
+  - name: environment
+    type: string
+  - name: tier
+    type: string
+    values: [low, standard, elevated, critical]
+  - name: approvalEnvironmentPrefix
+    displayName: Prefix of the Azure DevOps environment, e.g. 'prod' -> prod-elevated
+    type: string
+  - name: serviceConnections
+    displayName: >-
+      Map of identity role -> service connection. List keys in engine order (classifier, dlp, rbac, retention);
+      omit roles you do not deploy.
+    type: object
+  - name: frameworkRepository
+    type: string
+    default: ppdf
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: apply ${{ parameters.environment }} (${{ parameters.tier }})
+    dependsOn: ${{ parameters.planStageName }}
+    condition: >-
+      and(succeeded(),
+          eq(dependencies.${{ parameters.planStageName }}.outputs['Plan.ppdf.has_changes'], 'true'),
+          eq(dependencies.${{ parameters.planStageName }}.outputs['Plan.ppdf.blocked'], 'false'),
+          eq(dependencies.${{ parameters.planStageName }}.outputs['Plan.ppdf.approval_tier'], '${{ parameters.tier }}'))
+    lockBehavior: sequential
+    variables:
+      PPDF_ARTIFACT: $[ stageDependencies.${{ parameters.planStageName }}.Plan.outputs['meta.artifact_name'] ]
+      PPDF_PLAN_HASH: $[ stageDependencies.${{ parameters.planStageName }}.Plan.outputs['ppdf.plan_hash'] ]
+      PPDF_WORKLOADS: $[ stageDependencies.${{ parameters.planStageName }}.Plan.outputs['ppdf.workloads'] ]
+      PPDF_APPROVAL_ENVIRONMENT: $[ stageDependencies.${{ parameters.planStageName }}.Plan.outputs['ppdf.approval_environment'] ]
+    jobs:
+      - deployment: Apply
+        pool: ${{ parameters.pool }}
+        environment: ${{ parameters.approvalEnvironmentPrefix }}-${{ parameters.tier }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: none
+
+                - template: steps-setup.yml
+                  parameters:
+                    frameworkRepository: ${{ parameters.frameworkRepository }}
+                    checkoutConfig: false
+
+                - pwsh: |
+                    $expected = '${{ parameters.approvalEnvironmentPrefix }}-${{ parameters.tier }}'
+                    if ($env:PPDF_APPROVAL_ENVIRONMENT -and $env:PPDF_APPROVAL_ENVIRONMENT -ne $expected) {
+                      Write-Host "##vso[task.logissue type=error]Plan expects approval environment '$($env:PPDF_APPROVAL_ENVIRONMENT)' but this stage ran behind '$expected'. Align approvals.pattern with the pipeline."
+                      exit 3
+                    }
+                    if (-not $env:PPDF_PLAN_HASH) { Write-Host '##vso[task.logissue type=error]No plan hash from the plan stage.'; exit 1 }
+                    Write-Host "Approved plan $($env:PPDF_PLAN_HASH) for workloads: $($env:PPDF_WORKLOADS)"
+                  displayName: Check approval binding
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download approved plan
+                  inputs:
+                    buildType: current
+                    artifactName: $(PPDF_ARTIFACT)
+                    targetPath: $(Pipeline.Workspace)/plan
+
+                - pwsh: |
+                    $file = Get-ChildItem "$(Pipeline.Workspace)/plan" -Recurse -Include plan.json, promote.json, drift.json, rollback-plan.json | Select-Object -First 1
+                    if (-not $file) { Write-Host '##vso[task.logissue type=error]No plan document in the artifact.'; exit 1 }
+                    Write-Host "##vso[task.setvariable variable=PPDF_PLAN_PATH]$($file.FullName)"
+                  displayName: Locate plan
+
+                # One step per identity role so each runs under its own least-privilege service connection.
+                - ${{ each role in parameters.serviceConnections }}:
+                    - template: steps-ppdf.yml
+                      parameters:
+                        stepName: apply_${{ role.key }}
+                        displayName: apply ${{ role.key }} (${{ role.value }})
+                        serviceConnection: ${{ role.value }}
+                        successExitCodes: [0]
+                        condition: and(succeeded(), contains(format(',{0},', variables['PPDF_WORKLOADS']), ',${{ role.key }},'))
+                        arguments:
+                          - apply
+                          - -PlanPath
+                          - $(PPDF_PLAN_PATH)
+                          - -ExpectedPlanHash
+                          - $(PPDF_PLAN_HASH)
+                          - -ApprovedTier
+                          - ${{ parameters.tier }}
+                          - -Workload
+                          - ${{ role.key }}
+                          - -OutputPath
+                          - $(Pipeline.Workspace)/out/apply-${{ role.key }}
+
+                - pwsh: |
+                    $missing = @($env:PPDF_WORKLOADS -split ',' | Where-Object { $_ } | Where-Object { -not (Test-Path "$(Pipeline.Workspace)/out/apply-$_/apply-result.json") })
+                    if ($missing) { Write-Host "##vso[task.logissue type=error]Plan has changes for workload(s) with no service connection mapped: $($missing -join ', ')"; exit 1 }
+                  displayName: Verify every planned workload was applied
+
+                - publish: $(Pipeline.Workspace)/out
+                  artifact: ppdf-apply-${{ parameters.environment }}-$(System.StageAttempt)
+                  displayName: Publish evidence
+                  condition: always()

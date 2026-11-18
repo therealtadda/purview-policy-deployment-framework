@@ -1,0 +1,13 @@
+# Retention label: finance records, retain 7 years from creation then delete.
+apiVersion: ppdf.purview/v1
+kind: RetentionLabel
+metadata:
+  name: PPDF-Finance-7y
+  description: Finance records, retain 7 years from creation then delete
+  owner: records-management@contoso.com
+spec:
+  comment: Managed by PPDF.
+  retentionAction: KeepAndDelete
+  retentionDuration: 2555
+  retentionType: CreationAgeInDays
+  notes: Applied to finance records per the records retention schedule.

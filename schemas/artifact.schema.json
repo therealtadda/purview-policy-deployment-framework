@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/artifact.schema.json",
+  "title": "PPDF artifact envelope",
+  "description": "Common envelope for all artifact kinds. 'spec' and 'simulation' are validated by schemas/kinds/<kind>.schema.json.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "ppdf.purview/v1" },
+    "kind": { "type": "string", "pattern": "^[A-Z][A-Za-z]+$" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\[\\]<>%&]+$" },
+        "description": { "type": "string" },
+        "owner": { "type": "string", "description": "Accountable team or person (informational)." },
+        "environments": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "description": "Restrict to these environments. Omit for all." },
+        "ensure": { "enum": ["present", "absent"], "default": "present" },
+        "adopt": { "type": "boolean", "default": false, "description": "Take ownership of a matching pre-existing unmanaged object." },
+        "riskTier": { "enum": ["low", "standard", "elevated", "critical"], "description": "Minimum approval tier for any change to this artifact." },
+        "ringOverrides": { "type": "boolean", "default": true, "description": "Apply the environment's ring location overrides." },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "spec": { "type": "object" },
+    "simulation": {
+      "type": "object",
+      "properties": {
+        "skip": { "type": "boolean", "description": "Skip simulation (promotion then requires critical approval)." },
+        "scope": { "type": "object", "description": "Location overrides used only while simulating." },
+        "thresholds": { "type": "object" }
+      }
+    }
+  }
+}

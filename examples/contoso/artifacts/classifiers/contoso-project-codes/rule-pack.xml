@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Custom sensitive information type: Contoso project codes (e.g. "PRJ-2024-00417").
+  Bump <Version> on every content change; PPDF blocks content changes without a version bump.
+  GUIDs below are examples: generate your own (New-Guid) when copying this file.
+-->
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="76f3e53c-8c06-405f-ac83-5bcf21221bb6">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Publisher id="d65336e9-e91c-47f0-bcdc-c93cc793aab8"/>
+    <Details defaultLangCode="en-us">
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>Contoso Compliance Engineering</PublisherName>
+        <Name>Contoso Project Codes</Name>
+        <Description>Detects Contoso internal project codes.</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="ad2a5982-c5ad-47c9-84bf-ac0ebfed9044" patternsProximity="300" recommendedConfidence="85">
+      <Pattern confidenceLevel="85">
+        <IdMatch idRef="Regex_contoso_project_code"/>
+        <Match idRef="Keyword_contoso_project"/>
+      </Pattern>
+      <Pattern confidenceLevel="65">
+        <IdMatch idRef="Regex_contoso_project_code"/>
+      </Pattern>
+    </Entity>
+    <Regex id="Regex_contoso_project_code">\bPRJ-20[0-9]{2}-[0-9]{5}\b</Regex>
+    <Keyword id="Keyword_contoso_project">
+      <Group matchStyle="word">
+        <Term>project code</Term>
+        <Term>project number</Term>
+        <Term caseSensitive="false">PRJ</Term>
+      </Group>
+    </Keyword>
+    <LocalizedStrings>
+      <Resource idRef="ad2a5982-c5ad-47c9-84bf-ac0ebfed9044">
+        <Name default="true" langcode="en-us">Contoso Project Code</Name>
+        <Description default="true" langcode="en-us">Contoso internal project code in the form PRJ-YYYY-NNNNN.</Description>
+      </Resource>
+    </LocalizedStrings>
+  </Rules>
+</RulePackage>

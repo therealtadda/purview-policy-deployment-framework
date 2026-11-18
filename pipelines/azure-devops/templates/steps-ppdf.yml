@@ -1,0 +1,59 @@
+# Runs one PPDF CLI command under one Azure DevOps service connection (one purpose-specific identity).
+#
+# AzureCLI@2 is used only as the token broker: it explicitly references the service connection (Azure DevOps
+# now refuses OIDC token requests for service connections that the current job does not reference) and, with
+# addSpnToEnvironment, exposes the federated assertion as $env:idToken, which PPDF exchanges for Purview and
+# Graph tokens. The service connection should be a manually created "workload identity federation" Azure
+# Resource Manager connection for the PPDF app registration; the identity needs no Azure RBAC role
+# (the task logs in with --allow-no-subscriptions). See docs/adapters.md.
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: arguments
+    displayName: CLI arguments, e.g. [plan, -Environment, prod]
+    type: object
+  - name: stepName
+    type: string
+    default: ppdf
+  - name: displayName
+    type: string
+    default: PPDF
+  - name: successExitCodes
+    displayName: CLI exit codes treated as success (0 = no change, 2 = changes/drift, 3 = blocked/refused)
+    type: object
+    default: [0, 2]
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: env
+    displayName: Extra environment variables
+    type: object
+    default: {}
+
+steps:
+  - task: AzureCLI@2
+    name: ${{ parameters.stepName }}
+    displayName: ${{ parameters.displayName }}
+    condition: ${{ parameters.condition }}
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: pscore
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      visibleAzLogin: false
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+        $cliArgs = @($env:PPDF_ARGS_JSON | ConvertFrom-Json)
+        $ok = @($env:PPDF_OK_JSON | ConvertFrom-Json | ForEach-Object { [int]$_ })
+        Write-Host "ppdf $($cliArgs -join ' ')"
+        & $env:PPDF_CLI @cliArgs
+        $code = $LASTEXITCODE
+        Write-Host "##vso[task.setvariable variable=exit_code;isOutput=true]$code"
+        if ($code -in $ok) { $global:LASTEXITCODE = 0; exit 0 }
+        Write-Host "##vso[task.logissue type=error]ppdf exited with $code"
+        exit $code
+    env:
+      PPDF_ARGS_JSON: ${{ convertToJson(parameters.arguments) }}
+      PPDF_OK_JSON: ${{ convertToJson(parameters.successExitCodes) }}
+      ${{ each pair in parameters.env }}:
+        ${{ pair.key }}: ${{ pair.value }}

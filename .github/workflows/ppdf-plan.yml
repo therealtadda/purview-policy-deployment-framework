@@ -1,0 +1,206 @@
+# Reusable workflow: validate + plan / promote / drift / simulation-report / rollback with the READ-ONLY identity.
+# 'rollback' builds a plan (offline) that undoes the apply recorded in the evidence artifact of another workflow
+# run (rollback-run-id); the result is approved and applied with ppdf-apply.yml like any other plan.
+#
+# The job runs in a GitHub environment (e.g. "prod-read") whose OIDC subject is trusted only by the reader app
+# registration (see identities/terraform/examples/github). It produces a plan artifact whose SHA-256 hash is the
+# thing approvers sign off on in ppdf-apply.yml.
+#
+# Caller example:
+#   jobs:
+#     plan:
+#       uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@v0.1.0
+#       permissions: { id-token: write, contents: read, actions: read }
+#       with: { environment: prod, github-environment: prod-read, framework-ref: v0.1.0 }
+name: ppdf-plan
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: PPDF environment name (environments/<name>.yml).
+        type: string
+        required: true
+      github-environment:
+        description: GitHub environment that gates the reader identity's OIDC subject (e.g. prod-read).
+        type: string
+        required: true
+      command:
+        description: plan | promote | drift | simulation-report | rollback
+        type: string
+        default: plan
+      rollback-run-id:
+        description: For 'rollback' - the workflow run ID of the apply to undo (its ppdf-evidence-<environment>-* artifact is used).
+        type: string
+        default: ''
+      rollback-artifact:
+        description: For 'rollback' - evidence artifact name, if that run has more than one (ppdf-evidence-<env>-<run>-<attempt>).
+        type: string
+        default: ''
+      stage:
+        description: Stage for 'plan' (simulate | enforce | auto).
+        type: string
+        default: simulate
+      config-root:
+        description: Configuration root in the calling repository.
+        type: string
+        default: config
+      artifacts:
+        description: Optional comma-separated artifact id filter.
+        type: string
+        default: ''
+      workloads:
+        description: Optional comma-separated workload filter (dlp, retention, classifier, rbac).
+        type: string
+        default: ''
+      fail-on-blocked:
+        description: Fail the job when the plan contains blocked actions (exit 3).
+        type: boolean
+        default: true
+      runner:
+        description: Runner label.
+        type: string
+        default: ubuntu-latest
+      framework-repository:
+        description: Repository that hosts the framework.
+        type: string
+        default: therealtadda/purview-policy-deployment-framework
+      framework-ref:
+        description: Framework tag or commit SHA. Pin this to the same ref as the 'uses:' line.
+        type: string
+        default: main
+    outputs:
+      exit_code:
+        description: PPDF exit code (0 none, 2 changes/drift, 3 blocked/gate failed, 1 error).
+        value: ${{ jobs.plan.outputs.exit_code }}
+      plan_hash:
+        value: ${{ jobs.plan.outputs.plan_hash }}
+      has_changes:
+        value: ${{ jobs.plan.outputs.has_changes }}
+      blocked:
+        value: ${{ jobs.plan.outputs.blocked }}
+      approval_tier:
+        value: ${{ jobs.plan.outputs.approval_tier }}
+      approval_environment:
+        value: ${{ jobs.plan.outputs.approval_environment }}
+      workloads:
+        description: Comma-separated workloads with pending actions.
+        value: ${{ jobs.plan.outputs.workloads }}
+      sim_pass:
+        value: ${{ jobs.plan.outputs.sim_pass }}
+      artifact_name:
+        description: Name of the uploaded plan artifact (input for ppdf-apply.yml).
+        value: ${{ jobs.plan.outputs.artifact_name }}
+
+permissions: {}
+
+jobs:
+  plan:
+    name: ${{ inputs.command }} (${{ inputs.environment }})
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.github-environment }}
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    outputs:
+      exit_code: ${{ steps.run.outputs.exit_code }}
+      plan_hash: ${{ steps.run.outputs.plan_hash }}
+      has_changes: ${{ steps.run.outputs.has_changes }}
+      blocked: ${{ steps.run.outputs.blocked }}
+      approval_tier: ${{ steps.run.outputs.approval_tier }}
+      approval_environment: ${{ steps.run.outputs.approval_environment }}
+      workloads: ${{ steps.run.outputs.workloads }}
+      sim_pass: ${{ steps.run.outputs.sim_pass }}
+      artifact_name: ${{ steps.name.outputs.artifact_name }}
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout framework
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.framework-repository }}
+          ref: ${{ inputs.framework-ref }}
+          path: .ppdf
+          persist-credentials: false
+
+      - name: Set up PPDF
+        uses: ./.ppdf/.github/actions/setup-ppdf
+        with:
+          config-root: ${{ inputs.config-root }}
+
+      - name: Artifact name
+        id: name
+        shell: pwsh
+        env:
+          PPDF_IN_COMMAND: ${{ inputs.command }}
+          PPDF_IN_ENV: ${{ inputs.environment }}
+        run: Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_name=ppdf-$($env:PPDF_IN_COMMAND)-$($env:PPDF_IN_ENV)-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+
+      - name: Validate (offline)
+        shell: pwsh
+        env:
+          PPDF_IN_ENV: ${{ inputs.environment }}
+        run: |
+          & $env:PPDF_CLI validate -Environment $env:PPDF_IN_ENV -OutputPath out/validate
+          exit $LASTEXITCODE
+
+      - name: Download evidence to roll back
+        if: inputs.command == 'rollback'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.rollback-run-id }}
+          github-token: ${{ github.token }}
+          name: ${{ inputs.rollback-artifact != '' && inputs.rollback-artifact || null }}
+          pattern: ${{ inputs.rollback-artifact == '' && format('ppdf-evidence-{0}-*', inputs.environment) || null }}
+          path: rollback-source
+
+      - name: Run ${{ inputs.command }}
+        id: run
+        shell: pwsh
+        env:
+          PPDF_IN_COMMAND: ${{ inputs.command }}
+          PPDF_IN_ENV: ${{ inputs.environment }}
+          PPDF_IN_STAGE: ${{ inputs.stage }}
+          PPDF_IN_ARTIFACTS: ${{ inputs.artifacts }}
+          PPDF_IN_WORKLOADS: ${{ inputs.workloads }}
+          PPDF_IN_FAIL_BLOCKED: ${{ inputs.fail-on-blocked }}
+        run: |
+          if ($env:PPDF_IN_COMMAND -notin 'plan', 'promote', 'drift', 'simulation-report', 'rollback') { throw "Unsupported command '$($env:PPDF_IN_COMMAND)'." }
+          if ($env:PPDF_IN_COMMAND -eq 'rollback') {
+            # The evidence/ folder of the earlier apply holds the applied plan and apply-result.json with sidecars.
+            $ev = @(Get-ChildItem -Path rollback-source -Recurse -Directory -Filter evidence)
+            if ($ev.Count -ne 1) { throw "Expected exactly one evidence folder in the downloaded artifact(s), found $($ev.Count). Set rollback-artifact." }
+            $planFile = Get-ChildItem -Path $ev[0].FullName -File | Where-Object { $_.Name -in 'plan.json', 'promote.json', 'drift.json', 'rollback-plan.json' } | Select-Object -First 1
+            if (-not $planFile) { throw 'No applied plan found in the evidence folder.' }
+            $planEnv = (Get-Content -LiteralPath $planFile.FullName -Raw | ConvertFrom-Json).environment
+            if ($planEnv -ne $env:PPDF_IN_ENV) { throw "The evidence is for environment '$planEnv', not '$($env:PPDF_IN_ENV)'." }
+            $a = @('rollback', '-PlanPath', $planFile.FullName, '-ApplyResultPath', (Join-Path $ev[0].FullName 'apply-result.json'), '-OutputPath', 'out/plan')
+          }
+          else {
+            $a = @($env:PPDF_IN_COMMAND, '-Environment', $env:PPDF_IN_ENV, '-OutputPath', 'out/plan')
+            if ($env:PPDF_IN_COMMAND -eq 'plan') { $a += @('-Stage', $env:PPDF_IN_STAGE) }
+            if ($env:PPDF_IN_ARTIFACTS) { $a += @('-Artifact', $env:PPDF_IN_ARTIFACTS) }
+            if ($env:PPDF_IN_WORKLOADS) { $a += @('-Workload', $env:PPDF_IN_WORKLOADS) }
+          }
+          & $env:PPDF_CLI @a
+          $code = $LASTEXITCODE
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "exit_code=$code"
+          if ($code -eq 1) { exit 1 }
+          if ($code -eq 3 -and $env:PPDF_IN_FAIL_BLOCKED -eq 'true') {
+            Write-Host "::error::$($env:PPDF_IN_COMMAND) returned 3 (blocked actions or failed simulation gate). See the job summary."
+            exit 3
+          }
+          exit 0
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.artifact_name }}
+          path: out/plan/
+          if-no-files-found: warn
+          retention-days: 30

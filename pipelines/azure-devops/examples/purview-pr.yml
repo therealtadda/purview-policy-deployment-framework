@@ -1,0 +1,43 @@
+# Pull-request pipeline: offline validation for every PR, plus a read-only plan against production so
+# reviewers see exactly what would change (and which approval tier it needs) before merging.
+#
+# Azure Repos: add this pipeline as a Build validation branch policy on main (trigger: none below is correct).
+# GitHub repos: the pr: trigger applies. Keep "Build pull requests from forks" off, or at least
+# "Make secrets available to builds of forks" off, so forks can never use the reader service connection.
+# The reader connection is read-only by design; do not give it a branch-control check that excludes PR branches.
+trigger: none
+
+pr:
+  branches: { include: [main] }
+  paths: { include: [config/*] }
+
+resources:
+  repositories:
+    - repository: ppdf
+      type: github
+      name: therealtadda/purview-policy-deployment-framework
+      endpoint: github-ppdf
+      ref: refs/heads/main             # pin a release tag in production
+
+stages:
+  - stage: Validate
+    displayName: Validate configuration (offline)
+    jobs:
+      - job: Validate
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - template: pipelines/azure-devops/templates/steps-setup.yml@ppdf
+          - pwsh: |
+              & $env:PPDF_CLI validate -OutputPath "$(Pipeline.Workspace)/out/validate"
+              exit $LASTEXITCODE
+            displayName: ppdf validate (all environments)
+
+  - template: pipelines/azure-devops/templates/stage-plan.yml@ppdf
+    parameters:
+      stageName: Plan_prod
+      environment: prod
+      command: plan
+      stage: auto
+      readerServiceConnection: sc-ppdf-prod-reader
+      failOnBlocked: false             # show blocked actions in the PR rather than failing the check
+      dependsOn: [Validate]

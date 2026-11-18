@@ -1,0 +1,35 @@
+# Development tenant (multi-tenant topology). Fast feedback: low approval friction, short soak.
+apiVersion: ppdf.purview/v1
+kind: Environment
+metadata:
+  name: dev
+  description: Contoso development tenant
+spec:
+  tenant:
+    tenantId: 00000000-0000-0000-0000-000000000000
+    organization: contosodev.onmicrosoft.com
+    cloud: Commercial
+  # One identity per purpose. Client IDs are not secrets; federated credentials mean there are no secrets at all.
+  identities:
+    reader:     { clientId: 00000000-0000-0000-0000-000000000001, authMode: federated }
+    dlp:        { clientId: 00000000-0000-0000-0000-000000000002, authMode: federated }
+    retention:  { clientId: 00000000-0000-0000-0000-000000000003, authMode: federated }
+    classifier: { clientId: 00000000-0000-0000-0000-000000000004, authMode: federated }
+    rbac:       { clientId: 00000000-0000-0000-0000-000000000005, authMode: federated }
+  variables:
+    financeGroup: finance-dev@contosodev.onmicrosoft.com
+    complianceAdmins: [admin@contosodev.onmicrosoft.com]
+  simulation:
+    dlpMode: TestWithoutNotifications
+    minSoakHours: 1
+    lookbackDays: 7
+    thresholds:
+      DlpPolicy: { maxMatchesPerDay: 5000 }
+  approvals:
+    pattern: "{env}-{tier}"
+    maxPlanAgeHours: 24
+  guardrails:
+    entraRoleAllowlist:
+      - 17315797-102d-40b4-93e0-432062caca18 # Compliance Administrator
+      - e6d1a23a-da11-4be4-9570-befc86d067a7 # Compliance Data Administrator
+  allowDestructive: true

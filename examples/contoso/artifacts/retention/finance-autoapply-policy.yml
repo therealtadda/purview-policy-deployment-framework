@@ -1,0 +1,21 @@
+# Auto-apply label policy: applies PPDF-Finance-7y to content containing card or bank account numbers.
+apiVersion: ppdf.purview/v1
+kind: RetentionLabelPolicy
+metadata:
+  name: PPDF-Finance-AutoApply
+  description: Auto-apply the finance label to content containing card or bank numbers
+  owner: records-management@contoso.com
+spec:
+  comment: Managed by PPDF.
+  enabled: true
+  locations:
+    SharePointLocation: All
+    OneDriveLocation: All
+  autoApply:
+    label: PPDF-Finance-7y
+    sensitiveInformationTypes:
+      - name: Credit Card Number
+        minCount: 1
+        minConfidence: 85
+      - name: U.S. Bank Account Number
+        minCount: 1

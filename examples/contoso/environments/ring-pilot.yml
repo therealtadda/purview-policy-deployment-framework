@@ -1,0 +1,32 @@
+# Single-tenant ring topology: the production tenant, scoped to a pilot population.
+# Policies that target a location listed under ring.locationOverrides are narrowed to these values.
+apiVersion: ppdf.purview/v1
+kind: Environment
+metadata:
+  name: ring-pilot
+  description: Production tenant, pilot ring
+spec:
+  tenant:
+    tenantId: 00000000-0000-0000-0000-000000000000
+    organization: contoso.onmicrosoft.com
+  workloads: [dlp, retention]
+  identities:
+    reader:    { clientId: 00000000-0000-0000-0000-000000000021 }
+    dlp:       { clientId: 00000000-0000-0000-0000-000000000022 }
+    retention: { clientId: 00000000-0000-0000-0000-000000000023 }
+  ring:
+    name: pilot
+    order: 1
+    locationOverrides:
+      ExchangeLocation: [ppdf-pilot@contoso.onmicrosoft.com]
+      OneDriveLocation: [https://contoso-my.sharepoint.com/personal/pilot_user_contoso_onmicrosoft_com]
+      SharePointLocation: [https://contoso.sharepoint.com/sites/ppdf-pilot]
+  variables:
+    financeGroup: finance@contoso.onmicrosoft.com
+    complianceAdmins: [compliance-admins@contoso.onmicrosoft.com]
+  simulation:
+    minSoakHours: 72
+    thresholds:
+      DlpPolicy: { maxMatchesPerDay: 200, maxDistinctUsers: 50 }
+  approvals:
+    pattern: "prod-{tier}"

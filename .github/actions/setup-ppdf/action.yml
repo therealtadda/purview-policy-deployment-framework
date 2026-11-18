@@ -1,0 +1,60 @@
+name: Set up PPDF
+description: >
+  Installs the PowerShell modules the Purview Policy Deployment Framework needs and exports
+  PPDF_CLI / PPDF_MODULE_PATH / PPDF_CONFIG_ROOT for later steps. Requires a runner with PowerShell 7.4+.
+inputs:
+  config-root:
+    description: Path (relative to the workspace) of the configuration root containing environments/ and artifacts/.
+    required: false
+    default: config
+  exchange-online-version:
+    description: >
+      NuGet version range for ExchangeOnlineManagement. Connect-IPPSSession -AccessToken (used for
+      app-only federated sign-in) requires 3.8.0 or later.
+    required: false
+    default: '[3.8.0,4.0.0)'
+  graph-authentication-version:
+    description: NuGet version range for Microsoft.Graph.Authentication (used by rbac and reader identities).
+    required: false
+    default: '[2.25.0,3.0.0)'
+  powershell-yaml-version:
+    description: NuGet version range for powershell-yaml.
+    required: false
+    default: '[0.4.7,1.0.0)'
+outputs:
+  cli-path:
+    description: Absolute path to cli/ppdf.ps1.
+    value: ${{ steps.setup.outputs.cli-path }}
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: pwsh
+      env:
+        PPDF_IN_CONFIG_ROOT: ${{ inputs.config-root }}
+        PPDF_IN_EXO: ${{ inputs.exchange-online-version }}
+        PPDF_IN_GRAPH: ${{ inputs.graph-authentication-version }}
+        PPDF_IN_YAML: ${{ inputs.powershell-yaml-version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw "PowerShell 7.4+ required (found $($PSVersionTable.PSVersion))." }
+        $modules = [ordered]@{
+          'powershell-yaml'                 = $env:PPDF_IN_YAML
+          'ExchangeOnlineManagement'        = $env:PPDF_IN_EXO
+          'Microsoft.Graph.Authentication'  = $env:PPDF_IN_GRAPH
+        }
+        foreach ($name in $modules.Keys) {
+          Write-Host "Installing $name $($modules[$name])"
+          Install-PSResource -Name $name -Version $modules[$name] -Repository PSGallery -TrustRepository -Scope CurrentUser -Quiet
+        }
+        $root = (Resolve-Path (Join-Path $env:GITHUB_ACTION_PATH '../../..')).Path
+        $cli = Join-Path $root 'cli/ppdf.ps1'
+        $module = Join-Path $root 'src/PurviewIaC/PurviewIaC.psd1'
+        $config = Join-Path $env:GITHUB_WORKSPACE $env:PPDF_IN_CONFIG_ROOT
+        if (-not (Test-Path $cli)) { throw "PPDF CLI not found at $cli" }
+        Add-Content -Path $env:GITHUB_ENV -Value "PPDF_CLI=$cli"
+        Add-Content -Path $env:GITHUB_ENV -Value "PPDF_MODULE_PATH=$module"
+        Add-Content -Path $env:GITHUB_ENV -Value "PPDF_SCHEMA_PATH=$(Join-Path $root 'schemas')"
+        if (Test-Path $config) { Add-Content -Path $env:GITHUB_ENV -Value "PPDF_CONFIG_ROOT=$config" }
+        else { Write-Host "::warning::Config root '$config' not found; commands must pass -ConfigRoot." }
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "cli-path=$cli"

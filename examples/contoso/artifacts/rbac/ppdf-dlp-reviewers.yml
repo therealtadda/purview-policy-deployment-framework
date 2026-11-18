@@ -1,0 +1,17 @@
+# Custom Purview role group for people who review DLP simulation results (read-only access to alerts and activity).
+# Roles cannot be changed in place; to change roles, create a new role group and migrate members.
+apiVersion: ppdf.purview/v1
+kind: RoleGroup
+metadata:
+  name: PPDF-DLP-Reviewers
+  description: Reviewers of DLP simulation and alert data
+  owner: compliance-engineering@contoso.com
+spec:
+  displayName: PPDF DLP Reviewers
+  description: Read-only review of DLP alerts and activity. Managed by PPDF.
+  roles:
+    - View-Only DLP Compliance Management
+    - View-Only Manage Alerts
+  # Resolved from spec.variables in each environment file.
+  members: ${complianceAdmins}
+  membersMode: authoritative

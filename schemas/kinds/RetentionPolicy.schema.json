@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/RetentionPolicy.schema.json",
+  "title": "RetentionPolicy spec",
+  "description": "Retention policy with a single rule. Simulated as a Keep-only, unlocked policy.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "required": [
+        "locations",
+        "rule"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "comment": {
+          "type": "string",
+          "maxLength": 900
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "locations": {
+          "type": "object",
+          "description": "Location parameters, e.g. ExchangeLocation: [All]. Keys ending in 'Exception' are exclusions.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z]+(Location|LocationException)$"
+          },
+          "additionalProperties": {
+            "type": [
+              "array",
+              "string"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Additional cmdlet parameters passed through verbatim (PascalCase)."
+        },
+        "restrictiveRetention": {
+          "type": "boolean",
+          "description": "Preservation Lock. IRREVERSIBLE."
+        },
+        "acknowledgeIrreversible": {
+          "type": "boolean"
+        },
+        "rule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "comment": {
+              "type": "string"
+            },
+            "retentionDuration": {
+              "type": [
+                "string",
+                "integer"
+              ],
+              "pattern": "^([0-9]+|Unlimited)$",
+              "minimum": 0
+            },
+            "retentionComplianceAction": {
+              "enum": [
+                "Keep",
+                "KeepAndDelete",
+                "Delete"
+              ],
+              "default": "Keep"
+            },
+            "expirationDateOption": {
+              "enum": [
+                "CreationAgeInDays",
+                "ModificationAgeInDays"
+              ]
+            },
+            "parameters": {
+              "type": "object",
+              "description": "Additional cmdlet parameters passed through verbatim (PascalCase)."
+            }
+          }
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

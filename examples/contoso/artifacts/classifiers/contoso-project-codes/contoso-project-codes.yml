@@ -1,0 +1,16 @@
+# Custom sensitive information type rule package, gated on a labelled test corpus.
+# Simulation evidence = precision/recall from Test-DataClassification over corpus.yml.
+apiVersion: ppdf.purview/v1
+kind: SensitiveInfoTypeRulePackage
+metadata:
+  name: contoso-project-codes
+  description: Contoso internal project code detection
+  owner: compliance-engineering@contoso.com
+spec:
+  rulePackFile: ./rule-pack.xml
+  testCorpusFile: ./corpus.yml
+simulation:
+  thresholds:
+    minPrecision: 0.95
+    minRecall: 0.9
+    maxFalsePositives: 0

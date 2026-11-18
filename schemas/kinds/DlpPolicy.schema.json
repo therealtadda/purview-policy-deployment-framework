@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/kinds/DlpPolicy.schema.json",
+  "title": "DlpPolicy spec",
+  "description": "DLP policy and rules. Deployed in test mode during simulation.",
+  "type": "object",
+  "required": [
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "type": "object",
+      "required": [
+        "locations",
+        "rules"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "comment": {
+          "type": "string",
+          "maxLength": 900
+        },
+        "mode": {
+          "enum": [
+            "Enable",
+            "Disable",
+            "TestWithNotifications",
+            "TestWithoutNotifications"
+          ],
+          "default": "Enable"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "locations": {
+          "type": "object",
+          "description": "Location parameters, e.g. ExchangeLocation: [All]. Keys ending in 'Exception' are exclusions.",
+          "propertyNames": {
+            "pattern": "^[A-Za-z]+(Location|LocationException)$"
+          },
+          "additionalProperties": {
+            "type": [
+              "array",
+              "string"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Additional cmdlet parameters passed through verbatim (PascalCase)."
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "comment": {
+                "type": "string"
+              },
+              "disabled": {
+                "type": "boolean"
+              },
+              "parameters": {
+                "type": "object",
+                "description": "New-/Set-DlpComplianceRule parameters, e.g. ContentContainsSensitiveInformation, BlockAccess, NotifyUser."
+              },
+              "ignoreCompare": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Rule properties excluded from drift comparison (write-only or service-normalized)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "mode": {
+          "enum": [
+            "TestWithoutNotifications",
+            "TestWithNotifications"
+          ]
+        }
+      }
+    }
+  }
+}

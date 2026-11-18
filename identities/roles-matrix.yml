@@ -1,0 +1,113 @@
+# PPDF least-privilege roles matrix.
+# Source of truth for identities/powershell/Grant-PpdfPurviewRoles.ps1 and the Graph permissions in
+# identities/terraform/modules/ppdf-identities/locals.tf (keep in sync).
+#
+# status:
+#   documented - matches Microsoft Learn documentation at the time of writing
+#   verify     - believed correct but not confirmed in documentation; confirm in a test tenant with
+#                Get-ManagementRole / Get-ManagementRoleEntry "<role>\<cmdlet>" before relying on it in production.
+#
+# Every deployer authenticates app-only: Exchange.ManageAsApp (Office 365 Exchange Online,
+# appId 00000002-0000-0ff1-ce00-000000000000) + membership of ONE custom Purview role group.
+# No identity is ever placed in built-in role groups (Compliance Administrator, Organization Management) or given
+# standing Entra directory roles.
+
+identities:
+  reader:
+    displayName: ppdf-<env>-reader
+    purpose: validate, plan, simulation-report, drift, export (PRs and scheduled runs)
+    usedBy: [plan, simulation-report, drift, export]
+    authDefault: federated
+    entra:
+      appRoles:
+        - { resource: Office 365 Exchange Online, permission: Exchange.ManageAsApp, status: documented }
+        - { resource: Microsoft Graph, permission: RoleEligibilitySchedule.Read.Directory, status: documented, why: list PIM eligibility schedules (EntraRoleAssignment plan/drift) }
+        - { resource: Microsoft Graph, permission: RoleAssignmentSchedule.Read.Directory, status: documented, why: list PIM active schedules }
+    purviewRoleGroup: <PREFIX>_READER
+    purviewRoles:
+      - { role: View-Only DLP Compliance Management, status: documented, cmdlets: [Get-DlpCompliancePolicy, Get-DlpComplianceRule, Get-DlpSensitiveInformationTypeRulePackage] }
+      - { role: View-Only Retention Management, status: documented, cmdlets: [Get-RetentionCompliancePolicy, Get-RetentionComplianceRule, Get-ComplianceTag] }
+      - { role: View-Only Record Management, status: verify, cmdlets: [Get-ComplianceTag] }
+      - { role: View-Only Manage Alerts, status: verify, cmdlets: [] , why: DLP alert volume in simulation reports }
+      - { role: Data Classification List Viewer, status: verify, cmdlets: [Export-ActivityExplorerData], why: DLP simulation match evidence }
+    notes:
+      - Get-RoleGroup / Get-RoleGroupMember for RoleGroup drift may require Role Management (read is not split out). If the
+        reader cannot list role groups, run RBAC plans with the rbac identity in a separate, approval-gated job. (verify)
+      - Test-DataClassification (SIT precision/recall evidence) runs as the classifier identity during simulate.
+
+  dlp:
+    displayName: ppdf-<env>-dlp
+    purpose: create/update/remove DLP policies and rules (simulate and enforce stages)
+    usedBy: [apply, promote, rollback]
+    authDefault: federated
+    entra:
+      appRoles:
+        - { resource: Office 365 Exchange Online, permission: Exchange.ManageAsApp, status: documented }
+    purviewRoleGroup: <PREFIX>_DLP
+    purviewRoles:
+      - { role: DLP Compliance Management, status: documented, cmdlets: [New-DlpCompliancePolicy, Set-DlpCompliancePolicy, Remove-DlpCompliancePolicy, New-DlpComplianceRule, Set-DlpComplianceRule, Remove-DlpComplianceRule] }
+
+  retention:
+    displayName: ppdf-<env>-retention
+    purpose: retention policies, retention rules and retention labels
+    usedBy: [apply, promote, rollback]
+    authDefault: federated
+    entra:
+      appRoles:
+        - { resource: Office 365 Exchange Online, permission: Exchange.ManageAsApp, status: documented }
+    purviewRoleGroup: <PREFIX>_RETENTION
+    purviewRoles:
+      - { role: Retention Management, status: documented, cmdlets: [New-RetentionCompliancePolicy, Set-RetentionCompliancePolicy, Remove-RetentionCompliancePolicy, New-RetentionComplianceRule, Set-RetentionComplianceRule, Remove-RetentionComplianceRule, New-ComplianceTag, Set-ComplianceTag, Remove-ComplianceTag] }
+      - { role: Record Management, status: documented, optional: true, why: only for labels that declare items as records / regulatory records (-IncludeRecordManagement) }
+
+  classifier:
+    displayName: ppdf-<env>-classifier
+    purpose: custom sensitive information type rule packages (Phase 2 adds EDM schemas)
+    usedBy: [apply, promote, rollback, simulate evidence]
+    authDefault: federated
+    entra:
+      appRoles:
+        - { resource: Office 365 Exchange Online, permission: Exchange.ManageAsApp, status: documented }
+    purviewRoleGroup: <PREFIX>_CLASSIFIER
+    purviewRoles:
+      - { role: DLP Compliance Management, status: verify, cmdlets: [New-DlpSensitiveInformationTypeRulePackage, Set-DlpSensitiveInformationTypeRulePackage, Remove-DlpSensitiveInformationTypeRulePackage, Test-DataClassification] }
+    notes:
+      - Purview does not offer a SIT-only management role, so the classifier and DLP deployers may hold the same role.
+        They remain separate identities so that trust (FIC subject), approvals, audit trail and revocation are per purpose.
+
+  rbac:
+    displayName: ppdf-<env>-rbac
+    purpose: Purview role groups and Entra directory role eligibility via PIM
+    usedBy: [apply, promote, rollback]
+    authDefault: federated
+    entra:
+      appRoles:
+        - { resource: Office 365 Exchange Online, permission: Exchange.ManageAsApp, status: documented }
+        - { resource: Microsoft Graph, permission: RoleEligibilitySchedule.ReadWrite.Directory, status: documented, why: POST roleEligibilityScheduleRequests }
+        - { resource: Microsoft Graph, permission: RoleAssignmentSchedule.ReadWrite.Directory, status: documented, why: POST roleAssignmentScheduleRequests (time-bound active) }
+      directoryRoles: []   # never Privileged Role Administrator / Global Administrator
+    purviewRoleGroup: <PREFIX>_RBAC
+    purviewRoles:
+      - { role: Role Management, status: documented, cmdlets: [New-RoleGroup, Set-RoleGroup, Remove-RoleGroup, Add-RoleGroupMember, Remove-RoleGroupMember, Update-RoleGroupMember] }
+    notes:
+      - The engine additionally enforces guardrails.entraRoleAllowlist and entraPrincipalAllowlist, and every RBAC change is
+        tiered elevated/critical, so the strictest approval environment applies.
+      - Assigning highly privileged directory roles app-only may require additional permissions; PPDF intentionally
+        does not support it. (verify per role)
+
+# Phase 2 identities (planned, not yet implemented)
+planned:
+  edm-uploader: { purpose: EDM hashed data upload near the data source, type: managed identity on hardened VM or dedicated account in EDM_DataUploaders, status: verify }
+  labels: { purpose: sensitivity labels and auto-labeling, purviewRoles: [Sensitivity Label Administrator] }
+  irm: { purpose: Insider Risk Management policies, purviewRoles: [Insider Risk Management Admin] }
+
+# Agent identities (identities/agent-id) - read-only, propose-only
+agents:
+  ppdf-sim-analyst:
+    type: Entra Agent ID (agent identity under the ppdf blueprint)
+    purpose: analyse simulation reports and post a summary to the pull request
+    permissions: same Purview read roles as reader (separate role group <PREFIX>_AGENTS_READ); no write roles, ever
+  ppdf-drift-agent:
+    type: Entra Agent ID
+    purpose: run drift detection and open a remediation pull request (humans approve and the pipeline deploys)
+    permissions: read-only Purview roles; repository write limited to branches/PRs via the code host, not Entra

@@ -1,0 +1,23 @@
+# Labelled test corpus for the Contoso Project Code SIT.
+# The simulation report runs every case through Test-DataClassification and computes precision/recall.
+# "expect" lists entity names (LocalizedStrings Name) that should be detected; [] means nothing should match.
+# Use synthetic data only; never commit real sensitive content.
+cases:
+  - name: positive-with-keyword
+    text: "Please charge the hours to project code PRJ-2024-00417 before Friday."
+    expect: ["Contoso Project Code"]
+  - name: positive-regex-only
+    text: "Budget line PRJ-2023-10022 was approved."
+    expect: ["Contoso Project Code"]
+  - name: positive-file
+    file: ./corpus/positive-status-report.txt
+    expect: ["Contoso Project Code"]
+  - name: negative-wrong-prefix
+    text: "Ticket INC-2024-00417 was resolved."
+    expect: []
+  - name: negative-too-few-digits
+    text: "Draft reference PRJ-2024-417 is not a real project code."
+    expect: []
+  - name: negative-baseline
+    text: "Ordinary text that should not match anything."
+    expect: []

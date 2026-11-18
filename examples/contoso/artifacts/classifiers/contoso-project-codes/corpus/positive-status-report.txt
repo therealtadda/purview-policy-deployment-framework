@@ -1,0 +1,4 @@
+Weekly status report (synthetic sample)
+
+Project number: PRJ-2025-00031
+Status: on track. Next milestone is the design review.

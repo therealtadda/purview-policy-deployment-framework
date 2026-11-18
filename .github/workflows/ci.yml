@@ -1,0 +1,92 @@
+# Framework CI: offline checks only. No tenant, no identities, no secrets.
+# The ppdf-plan / ppdf-apply workflows in this folder are reusable (workflow_call) and never run here on their own.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  powershell:
+    name: Lint, unit tests, example validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw "PowerShell 7.4+ required (found $($PSVersionTable.PSVersion))." }
+          Install-PSResource -Name powershell-yaml -Version '[0.4.7,1.0.0)' -Repository PSGallery -TrustRepository -Scope CurrentUser -Quiet
+          Install-PSResource -Name Pester -Version '[5.5.0,6.0.0)' -Repository PSGallery -TrustRepository -Scope CurrentUser -Quiet
+          Install-PSResource -Name PSScriptAnalyzer -Version '[1.22.0,2.0.0)' -Repository PSGallery -TrustRepository -Scope CurrentUser -Quiet
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $findings = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          $findings | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 300 | Write-Host
+          foreach ($f in $findings) { Write-Host "::error file=$($f.ScriptPath),line=$($f.Line)::$($f.RuleName): $($f.Message)" }
+          if ($findings.Count) { throw "$($findings.Count) PSScriptAnalyzer finding(s)." }
+
+      - name: Pester unit tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = './tests/unit'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          $cfg.TestResult.Enabled = $true
+          $cfg.TestResult.OutputFormat = 'NUnitXml'
+          $cfg.TestResult.OutputPath = './testResults.xml'
+          Invoke-Pester -Configuration $cfg
+
+      - name: Validate the Contoso example through the CLI
+        shell: pwsh
+        run: pwsh ./cli/ppdf.ps1 validate -ConfigRoot ./examples/contoso -OutputPath ./out/validate
+
+      - name: Check every command has operator help
+        shell: pwsh
+        run: |
+          pwsh ./cli/ppdf.ps1 help | Out-Null
+          foreach ($c in 'validate', 'plan', 'apply', 'simulation-report', 'promote', 'drift', 'export', 'rollback', 'kinds') {
+            $text = pwsh ./cli/ppdf.ps1 help $c | Out-String
+            if ($LASTEXITCODE -ne 0 -or $text -notmatch 'EXAMPLE') { throw "No usable help for '$c'." }
+          }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            testResults.xml
+            out/validate
+          if-no-files-found: ignore
+
+  terraform:
+    name: Terraform module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff pipelines/terraform
+      - name: terraform validate (module)
+        working-directory: pipelines/terraform/modules/purview-config
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate

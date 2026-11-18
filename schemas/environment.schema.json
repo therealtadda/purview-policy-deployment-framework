@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ppdf.example/schemas/environment.schema.json",
+  "title": "PPDF environment",
+  "description": "A deployment target: a tenant (multi-tenant topology) or a ring within a tenant (single-tenant topology).",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "ppdf.purview/v1" },
+    "kind": { "const": "Environment" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+        "description": { "type": "string" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["tenant", "identities"],
+      "additionalProperties": false,
+      "properties": {
+        "tenant": {
+          "type": "object",
+          "required": ["tenantId", "organization"],
+          "additionalProperties": false,
+          "properties": {
+            "tenantId": { "type": "string", "pattern": "^[0-9a-fA-F-]{36}$|^\\$\\{" },
+            "organization": { "type": "string", "description": "Initial domain, e.g. contoso.onmicrosoft.com" },
+            "cloud": { "enum": ["Commercial", "GCC", "GCCHigh", "DoD"], "default": "Commercial" },
+            "sccTokenScope": { "type": "string", "description": "Override the token scope used for app-only Security & Compliance PowerShell access." }
+          }
+        },
+        "workloads": {
+          "type": "array",
+          "description": "Workloads managed in this environment. Defaults to all registered workloads.",
+          "items": { "enum": ["dlp", "retention", "classifier", "rbac"] },
+          "uniqueItems": true
+        },
+        "identities": {
+          "type": "object",
+          "description": "Purpose-specific identities per role. 'reader' is required for plan/simulation-report/drift/export.",
+          "required": ["reader"],
+          "additionalProperties": false,
+          "properties": {
+            "reader": { "$ref": "#/definitions/identity" },
+            "dlp": { "$ref": "#/definitions/identity" },
+            "retention": { "$ref": "#/definitions/identity" },
+            "classifier": { "$ref": "#/definitions/identity" },
+            "rbac": { "$ref": "#/definitions/identity" }
+          }
+        },
+        "variables": { "type": "object", "description": "Values substituted into artifacts as ${name}." },
+        "ring": {
+          "type": "object",
+          "description": "Single-tenant ring topology: narrows policy scope for this ring.",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "order": { "type": "integer", "minimum": 0 },
+            "locationOverrides": {
+              "type": "object",
+              "description": "Location property overrides applied to policies that already target that location (e.g. ExchangeLocation: [pilot-group@contoso.com]).",
+              "additionalProperties": { "type": ["array", "string"] }
+            }
+          }
+        },
+        "simulation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dlpMode": { "enum": ["TestWithoutNotifications", "TestWithNotifications"], "default": "TestWithoutNotifications" },
+            "minSoakHours": { "type": "number", "minimum": 0 },
+            "maxReportAgeHours": { "type": "number", "minimum": 1, "default": 168 },
+            "lookbackDays": { "type": "integer", "minimum": 1, "maximum": 30, "default": 7 },
+            "thresholds": {
+              "type": "object",
+              "description": "Per-kind default thresholds, e.g. { DlpPolicy: { maxMatchesPerDay: 500 } }.",
+              "additionalProperties": { "$ref": "#/definitions/thresholds" }
+            }
+          }
+        },
+        "approvals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pattern": { "type": "string", "default": "{env}-{tier}", "description": "Orchestrator approval environment name pattern. Tokens: {env}, {tier}." },
+            "environments": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "low": { "type": "string" },
+                "standard": { "type": "string" },
+                "elevated": { "type": "string" },
+                "critical": { "type": "string" }
+              }
+            },
+            "maxPlanAgeHours": { "type": "number", "minimum": 1, "default": 24 }
+          }
+        },
+        "guardrails": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "entraRoleAllowlist": {
+              "type": "array",
+              "description": "Entra role definition (template) IDs that EntraRoleAssignment artifacts may assign. Anything else fails validation.",
+              "items": { "type": "string", "pattern": "^[0-9a-fA-F-]{36}$" },
+              "uniqueItems": true
+            },
+            "entraPrincipalAllowlist": {
+              "type": "array",
+              "description": "Optional principal (object) IDs that may receive Entra role assignments.",
+              "items": { "type": "string" },
+              "uniqueItems": true
+            },
+            "sensitiveRoleGroupRoles": {
+              "type": "array",
+              "description": "Additional Purview roles that make role group changes critical.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "allowDestructive": { "type": "boolean", "default": false, "description": "Allow deletion of orphaned top-level objects (still requires critical approval)." }
+      }
+    }
+  },
+  "definitions": {
+    "identity": {
+      "type": "object",
+      "required": ["clientId"],
+      "additionalProperties": false,
+      "properties": {
+        "clientId": { "type": "string" },
+        "authMode": { "enum": ["federated", "managedidentity-fic", "certificate", "interactive"], "default": "federated" },
+        "adoServiceConnectionId": { "type": "string" },
+        "managedIdentityClientId": { "type": "string" },
+        "certificateThumbprint": { "type": "string" },
+        "certificatePath": { "type": "string" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "propertyNames": { "pattern": "^(max|min|require)[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": ["number", "boolean", "null"] }
+    }
+  }
+}

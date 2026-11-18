@@ -1,0 +1,39 @@
+# PPDF run output (plans, reports, evidence, logs)
+out/
+.ppdf/
+rollback-source/
+export/
+*.log.jsonl
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Identity outputs and credentials: never commit
+grant.json
+*-grant.json
+*.pfx
+*.pem
+*.key
+*.cer
+
+# Test output
+testResults.xml
+coverage.xml
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

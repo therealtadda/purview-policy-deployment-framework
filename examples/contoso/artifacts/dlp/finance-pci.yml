@@ -1,0 +1,46 @@
+# DLP policy for payment card data. Deployed to each environment first in a test mode (simulation), then
+# enforced once the simulation report passes its thresholds and the change is approved.
+apiVersion: ppdf.purview/v1
+kind: DlpPolicy
+metadata:
+  name: PPDF-Finance-PCI
+  description: Block external sharing of payment card numbers
+  owner: compliance-engineering@contoso.com
+  riskTier: standard
+spec:
+  comment: Managed by PPDF. Blocks external sharing of credit card numbers.
+  mode: Enable
+  locations:
+    ExchangeLocation: All
+    SharePointLocation: All
+    OneDriveLocation: All
+    TeamsLocation: All
+  rules:
+    - name: PPDF-Finance-PCI-High
+      comment: High volume of card numbers shared externally
+      parameters:
+        AccessScope: NotInOrganization
+        BlockAccess: true
+        NotifyUser: [Owner, LastModifier]
+        GenerateIncidentReport: [SiteAdmin]
+        ReportSeverityLevel: High
+        ContentContainsSensitiveInformation:
+          - name: Credit Card Number
+            minCount: "10"
+            minConfidence: "85"
+    - name: PPDF-Finance-PCI-Low
+      comment: Low volume of card numbers shared externally
+      parameters:
+        AccessScope: NotInOrganization
+        NotifyUser: [Owner]
+        ReportSeverityLevel: Low
+        ContentContainsSensitiveInformation:
+          - name: Credit Card Number
+            minCount: "1"
+            maxCount: "9"
+            minConfidence: "85"
+simulation:
+  mode: TestWithNotifications
+  thresholds:
+    maxMatchesPerDay: 500
+    maxDistinctUsers: 250

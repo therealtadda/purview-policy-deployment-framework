@@ -1,0 +1,67 @@
+# Checks out configuration + framework, installs PowerShell dependencies and sets PPDF_* variables.
+parameters:
+  - name: frameworkRepository
+    displayName: Repository resource alias that hosts the framework ('self' when config and framework share a repo)
+    type: string
+    default: ppdf
+  - name: configRoot
+    displayName: Configuration root relative to the configuration repository
+    type: string
+    default: config
+  - name: checkoutConfig
+    type: boolean
+    default: true
+  - name: exchangeOnlineVersion
+    displayName: ExchangeOnlineManagement range (Connect-IPPSSession -AccessToken needs 3.8.0+)
+    type: string
+    default: '[3.8.0,4.0.0)'
+  - name: graphAuthenticationVersion
+    type: string
+    default: '[2.25.0,3.0.0)'
+  - name: powershellYamlVersion
+    type: string
+    default: '[0.4.7,1.0.0)'
+
+steps:
+  - ${{ if eq(parameters.frameworkRepository, 'self') }}:
+      - checkout: self
+        path: s/ppdf
+        persistCredentials: false
+  - ${{ else }}:
+      - ${{ if parameters.checkoutConfig }}:
+          - checkout: self
+            path: s/config
+            persistCredentials: false
+      - checkout: ${{ parameters.frameworkRepository }}
+        path: s/ppdf
+        persistCredentials: false
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw "PowerShell 7.4+ required (found $($PSVersionTable.PSVersion))." }
+      $modules = [ordered]@{
+        'powershell-yaml'                = $env:PPDF_IN_YAML
+        'ExchangeOnlineManagement'       = $env:PPDF_IN_EXO
+        'Microsoft.Graph.Authentication' = $env:PPDF_IN_GRAPH
+      }
+      foreach ($name in $modules.Keys) {
+        Write-Host "Installing $name $($modules[$name])"
+        Install-PSResource -Name $name -Version $modules[$name] -Repository PSGallery -TrustRepository -Scope CurrentUser -Quiet
+      }
+      $root = Join-Path $env:PIPELINE_WORKSPACE 's/ppdf'
+      $configBase = if ($env:PPDF_IN_FRAMEWORK -eq 'self') { $root } else { Join-Path $env:PIPELINE_WORKSPACE 's/config' }
+      $cli = Join-Path $root 'cli/ppdf.ps1'
+      if (-not (Test-Path $cli)) { throw "PPDF CLI not found at $cli" }
+      Write-Host "##vso[task.setvariable variable=PPDF_CLI]$cli"
+      Write-Host "##vso[task.setvariable variable=PPDF_MODULE_PATH]$(Join-Path $root 'src/PurviewIaC/PurviewIaC.psd1')"
+      Write-Host "##vso[task.setvariable variable=PPDF_SCHEMA_PATH]$(Join-Path $root 'schemas')"
+      $config = Join-Path $configBase $env:PPDF_IN_CONFIG_ROOT
+      if (Test-Path $config) { Write-Host "##vso[task.setvariable variable=PPDF_CONFIG_ROOT]$config" }
+      else { Write-Host "##vso[task.logissue type=warning]Config root '$config' not found; commands must pass -ConfigRoot." }
+    displayName: Set up PPDF
+    env:
+      PPDF_IN_FRAMEWORK: ${{ parameters.frameworkRepository }}
+      PPDF_IN_CONFIG_ROOT: ${{ parameters.configRoot }}
+      PPDF_IN_EXO: ${{ parameters.exchangeOnlineVersion }}
+      PPDF_IN_GRAPH: ${{ parameters.graphAuthenticationVersion }}
+      PPDF_IN_YAML: ${{ parameters.powershellYamlVersion }}

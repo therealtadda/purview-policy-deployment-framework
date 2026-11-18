@@ -1,0 +1,109 @@
+# Example deployment pipeline for a configuration repository in Azure Repos or GitHub.
+#
+#   merge to main -> dev: plan -> [approval: dev-<tier>] -> apply -> test: plan -> [approval: test-<tier>] -> apply
+#   manual run    -> choose environment + command (e.g. promote prod from simulation to enforcement, or
+#                    rollback with the run ID of the apply to undo)
+#
+# Azure DevOps setup (see docs/adapters.md):
+#   * Service connections (one per identity, workload identity federation, "Grant access to all pipelines" OFF,
+#     authorise this pipeline only): sc-ppdf-<env>-reader, sc-ppdf-<env>-{classifier,dlp,rbac,retention}
+#   * Environments with Approvals checks (no self-approval): <prefix>-{low,standard,elevated,critical}
+#     where <prefix> matches approvals.pattern in environments/<env>.yml ('{env}-{tier}' or 'prod-{tier}').
+#   * Optionally add an Approvals check to every deployer service connection as a second, identity-level gate.
+trigger:
+  branches: { include: [main] }
+  paths: { include: [config/*] }
+
+pr: none
+
+parameters:
+  - name: target
+    displayName: Run mode
+    type: string
+    default: rings
+    values: [rings, dev, test, ring-pilot, prod]
+  - name: command
+    displayName: Command (manual runs)
+    type: string
+    default: plan
+    values: [plan, promote, drift, rollback]
+  - name: stage
+    displayName: Stage for 'plan'
+    type: string
+    default: simulate
+    values: [simulate, enforce, auto]
+  # Runtime string parameters cannot default to an empty string, so 'none' means "not set".
+  - name: rollbackRunId
+    displayName: For 'rollback' - run ID of this pipeline whose apply should be undone
+    type: string
+    default: none
+  - name: rollbackArtifact
+    displayName: For 'rollback' - evidence artifact (only if that run applied this environment more than once)
+    type: string
+    default: none
+
+resources:
+  repositories:
+    - repository: ppdf
+      type: github
+      name: therealtadda/purview-policy-deployment-framework
+      endpoint: github-ppdf            # GitHub service connection (read-only) used to fetch the framework
+      ref: refs/heads/main             # pin a release tag in production, e.g. refs/tags/v0.1.0
+
+stages:
+  - ${{ if eq(parameters.target, 'rings') }}:
+      - template: pipelines/azure-devops/templates/stages-environment.yml@ppdf
+        parameters:
+          id: dev
+          environment: dev
+          approvalEnvironmentPrefix: dev
+          stage: auto
+          readerServiceConnection: sc-ppdf-dev-reader
+          serviceConnections:
+            classifier: sc-ppdf-dev-classifier
+            dlp: sc-ppdf-dev-dlp
+            rbac: sc-ppdf-dev-rbac
+            retention: sc-ppdf-dev-retention
+
+      - template: pipelines/azure-devops/templates/stages-environment.yml@ppdf
+        parameters:
+          id: test
+          environment: test
+          approvalEnvironmentPrefix: test
+          stage: simulate
+          readerServiceConnection: sc-ppdf-test-reader
+          serviceConnections:
+            classifier: sc-ppdf-test-classifier
+            dlp: sc-ppdf-test-dlp
+            rbac: sc-ppdf-test-rbac
+            retention: sc-ppdf-test-retention
+          dependsOn: [Plan_dev, Apply_dev_low, Apply_dev_standard, Apply_dev_elevated, Apply_dev_critical]
+
+  - ${{ else }}:
+      - template: pipelines/azure-devops/templates/stages-environment.yml@ppdf
+        parameters:
+          id: ${{ replace(parameters.target, '-', '_') }}
+          environment: ${{ parameters.target }}
+          command: ${{ parameters.command }}
+          stage: ${{ parameters.stage }}
+          ${{ if ne(parameters.rollbackRunId, 'none') }}:
+            rollbackRunId: ${{ parameters.rollbackRunId }}
+          ${{ if ne(parameters.rollbackArtifact, 'none') }}:
+            rollbackArtifact: ${{ parameters.rollbackArtifact }}
+          # ring-pilot shares the prod tenant, identities and approval environments.
+          ${{ if in(parameters.target, 'prod', 'ring-pilot') }}:
+            approvalEnvironmentPrefix: prod
+            readerServiceConnection: sc-ppdf-prod-reader
+            serviceConnections:
+              classifier: sc-ppdf-prod-classifier
+              dlp: sc-ppdf-prod-dlp
+              rbac: sc-ppdf-prod-rbac
+              retention: sc-ppdf-prod-retention
+          ${{ else }}:
+            approvalEnvironmentPrefix: ${{ parameters.target }}
+            readerServiceConnection: sc-ppdf-${{ parameters.target }}-reader
+            serviceConnections:
+              classifier: sc-ppdf-${{ parameters.target }}-classifier
+              dlp: sc-ppdf-${{ parameters.target }}-dlp
+              rbac: sc-ppdf-${{ parameters.target }}-rbac
+              retention: sc-ppdf-${{ parameters.target }}-retention

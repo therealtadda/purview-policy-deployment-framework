@@ -1,0 +1,58 @@
+# Example caller workflow: scheduled read-only checks.
+#   * simulation-report: queries simulation results for artifacts in simulate mode and evaluates thresholds,
+#     so reviewers can see whether a policy is ready to promote (then run purview-deploy with command=promote).
+#   * drift: compares the tenant with the repository and opens an issue when someone changed config out of band.
+name: purview-scheduled
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  simulation-report:
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: prod
+      github-environment: prod-read
+      command: simulation-report
+      # A failing gate is information, not a broken pipeline.
+      fail-on-blocked: false
+      framework-ref: main
+
+  drift:
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: prod
+      github-environment: prod-read
+      command: drift
+      fail-on-blocked: false
+      framework-ref: main
+
+  report-drift:
+    needs: drift
+    if: needs.drift.outputs.exit_code == '2' || needs.drift.outputs.exit_code == '3'
+    runs-on: ubuntu-latest
+    permissions: { issues: write, actions: read }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.drift.outputs.artifact_name }}
+          path: drift
+      - name: Open or update drift issue
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $md = Get-ChildItem drift -Recurse -Filter drift.md | Select-Object -First 1
+          $body = "Drift detected in **prod** by run $($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID).`n`nRemediate by re-running purview-deploy (command: drift) or by updating the repository to match.`n`n"
+          if ($md) { $body += Get-Content $md.FullName -Raw }
+          Set-Content -Path issue.md -Value $body -Encoding utf8NoBOM
+          gh label create ppdf-drift --repo $env:GITHUB_REPOSITORY --color D93F0B --description 'Purview configuration drift' --force | Out-Null
+          $existing = gh issue list --repo $env:GITHUB_REPOSITORY --state open --label ppdf-drift --json number --jq '.[0].number'
+          if ($existing) { gh issue comment $existing --repo $env:GITHUB_REPOSITORY --body-file issue.md }
+          else { gh issue create --repo $env:GITHUB_REPOSITORY --title 'Purview configuration drift (prod)' --label ppdf-drift --body-file issue.md }

@@ -1,0 +1,111 @@
+# Reusable workflow: apply an approved plan with the purpose-specific WRITE identities.
+#
+# Human in the loop: the job runs in the GitHub environment chosen by the plan (approval_environment, e.g.
+# "prod-elevated"). Configure that environment with required reviewers, "Prevent self-review" and a deployment
+# branch policy (e.g. main only). GitHub only issues the OIDC token whose subject the deployer apps trust after a
+# reviewer approves, so no write credential exists before approval.
+#
+# Integrity: apply refuses a plan whose SHA-256 differs from 'plan-hash' (the hash shown to the approver in the
+# plan job summary), a plan with blocked actions, a plan that requires a higher tier than 'approval-tier', or a
+# plan older than approvals.maxPlanAgeHours. Each workload re-checks that the tenant still matches the plan.
+name: ppdf-apply
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: PPDF environment name (display/concurrency only; the plan carries its environment spec).
+        type: string
+        required: true
+      approval-environment:
+        description: GitHub environment holding the approval gate (ppdf-plan output approval_environment).
+        type: string
+        required: true
+      approval-tier:
+        description: Tier of that gate (ppdf-plan output approval_tier).
+        type: string
+        required: true
+      plan-artifact:
+        description: Plan artifact name (ppdf-plan output artifact_name).
+        type: string
+        required: true
+      plan-hash:
+        description: Approved plan hash (ppdf-plan output plan_hash).
+        type: string
+        required: true
+      workloads:
+        description: Optional comma-separated workload filter.
+        type: string
+        default: ''
+      runner:
+        type: string
+        default: ubuntu-latest
+      framework-repository:
+        type: string
+        default: therealtadda/purview-policy-deployment-framework
+      framework-ref:
+        type: string
+        default: main
+    outputs:
+      exit_code:
+        value: ${{ jobs.apply.outputs.exit_code }}
+
+permissions: {}
+
+jobs:
+  apply:
+    name: apply (${{ inputs.environment }} / ${{ inputs.approval-tier }})
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.approval-environment }}
+    concurrency:
+      group: ppdf-apply-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    outputs:
+      exit_code: ${{ steps.apply.outputs.exit_code }}
+    steps:
+      - name: Checkout framework
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.framework-repository }}
+          ref: ${{ inputs.framework-ref }}
+          path: .ppdf
+          persist-credentials: false
+
+      - name: Set up PPDF
+        uses: ./.ppdf/.github/actions/setup-ppdf
+
+      - name: Download approved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.plan-artifact }}
+          path: plan
+
+      - name: Apply
+        id: apply
+        shell: pwsh
+        env:
+          PPDF_IN_HASH: ${{ inputs.plan-hash }}
+          PPDF_IN_TIER: ${{ inputs.approval-tier }}
+          PPDF_IN_WORKLOADS: ${{ inputs.workloads }}
+        run: |
+          $plan = Get-ChildItem -Path plan -Recurse -Filter '*.json' | Where-Object { $_.Name -in 'plan.json', 'promote.json', 'drift.json', 'rollback-plan.json' } | Select-Object -First 1
+          if (-not $plan) { throw 'No plan document found in the downloaded artifact.' }
+          $a = @('apply', '-PlanPath', $plan.FullName, '-ExpectedPlanHash', $env:PPDF_IN_HASH, '-ApprovedTier', $env:PPDF_IN_TIER, '-OutputPath', 'out/apply')
+          if ($env:PPDF_IN_WORKLOADS) { $a += @('-Workload', $env:PPDF_IN_WORKLOADS) }
+          & $env:PPDF_CLI @a
+          $code = $LASTEXITCODE
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "exit_code=$code"
+          exit $code
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppdf-evidence-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/apply/
+          if-no-files-found: warn
+          retention-days: 90

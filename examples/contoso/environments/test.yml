@@ -1,0 +1,28 @@
+# Test / UAT tenant (multi-tenant topology). Mirrors production configuration with representative data.
+apiVersion: ppdf.purview/v1
+kind: Environment
+metadata:
+  name: test
+  description: Contoso test tenant
+spec:
+  tenant:
+    tenantId: 00000000-0000-0000-0000-000000000000
+    organization: contosotest.onmicrosoft.com
+  identities:
+    reader:     { clientId: 00000000-0000-0000-0000-000000000011 }
+    dlp:        { clientId: 00000000-0000-0000-0000-000000000012 }
+    retention:  { clientId: 00000000-0000-0000-0000-000000000013 }
+    classifier: { clientId: 00000000-0000-0000-0000-000000000014 }
+    rbac:       { clientId: 00000000-0000-0000-0000-000000000015 }
+  variables:
+    financeGroup: finance-test@contosotest.onmicrosoft.com
+    complianceAdmins: [admin@contosotest.onmicrosoft.com]
+  simulation:
+    minSoakHours: 24
+    thresholds:
+      DlpPolicy: { maxMatchesPerDay: 1000, maxDistinctUsers: 200 }
+  approvals:
+    pattern: "{env}-{tier}"
+  guardrails:
+    entraRoleAllowlist:
+      - 17315797-102d-40b4-93e0-432062caca18 # Compliance Administrator

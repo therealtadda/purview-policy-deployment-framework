@@ -1,0 +1,18 @@
+# PIM-eligible (not standing) Compliance Administrator assignment for the compliance admins group.
+# The role must be in the environment's guardrails.entraRoleAllowlist, and in prod the principal must be in
+# guardrails.entraPrincipalAllowlist. Only applies to environments listed below.
+apiVersion: ppdf.purview/v1
+kind: EntraRoleAssignment
+metadata:
+  name: compliance-admins-pim
+  description: Compliance admins group eligible for Compliance Administrator
+  owner: identity-governance@contoso.com
+  environments: [prod]
+spec:
+  principalId: 00000000-0000-0000-0000-0000000000aa # Role-assignable group object ID
+  roleDefinitionId: 17315797-102d-40b4-93e0-432062caca18 # Compliance Administrator
+  directoryScopeId: /
+  assignmentType: eligible
+  duration: P365D
+  justification: Eligible Compliance Administrator for the compliance admins group (annual review).
+  ticket: "CHG-0001"

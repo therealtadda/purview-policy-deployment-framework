@@ -1,0 +1,70 @@
+# Example caller workflow: pull request checks for a configuration repository.
+#   1. offline validation (schemas + semantics, no tenant access, runs for every PR including forks)
+#   2. read-only plan against prod for same-repository PRs, posted as a PR comment so reviewers see the
+#      exact changes (and the approval tier that will be required) before merging.
+name: purview-pr
+
+on:
+  pull_request:
+    paths: ['config/**']
+
+permissions: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/checkout@v4
+        with:
+          repository: therealtadda/purview-policy-deployment-framework
+          ref: main
+          path: .ppdf
+          persist-credentials: false
+      - uses: ./.ppdf/.github/actions/setup-ppdf
+      - name: Validate all environments
+        shell: pwsh
+        run: |
+          & $env:PPDF_CLI validate -OutputPath out/validate
+          exit $LASTEXITCODE
+
+  plan-prod:
+    needs: validate
+    # Never hand an identity (even read-only) to code from forks.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: therealtadda/purview-policy-deployment-framework/.github/workflows/ppdf-plan.yml@main
+    permissions: { id-token: write, contents: read, actions: read }
+    with:
+      environment: prod
+      # Use a dedicated reader environment for PRs if prod-read is restricted to the main branch.
+      github-environment: prod-read
+      stage: auto
+      fail-on-blocked: false
+      framework-ref: main
+
+  comment:
+    needs: plan-prod
+    if: always() && needs.plan-prod.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions: { pull-requests: write, actions: read }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan-prod.outputs.artifact_name }}
+          path: plan
+      - name: Comment plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          TIER: ${{ needs.plan-prod.outputs.approval_tier }}
+          HASH: ${{ needs.plan-prod.outputs.plan_hash }}
+        run: |
+          $md = Get-ChildItem plan -Recurse -Filter plan.md | Select-Object -First 1
+          $body = "### PPDF plan (prod, read-only)`n`nRequired approval tier on merge: **$($env:TIER)** - plan hash ``$($env:HASH)```n`n"
+          if ($md) { $body += (Get-Content $md.FullName -Raw) } else { $body += '_No plan produced; see the workflow run._' }
+          if ($body.Length -gt 60000) { $body = $body.Substring(0, 60000) + "`n`n_(truncated; download the plan artifact)_" }
+          Set-Content -Path comment.md -Value $body -Encoding utf8NoBOM
+          gh pr comment $env:PR --repo $env:GITHUB_REPOSITORY --body-file comment.md

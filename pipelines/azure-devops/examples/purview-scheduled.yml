@@ -1,0 +1,56 @@
+# Scheduled, read-only pipeline: daily simulation report (is the simulation soak healthy enough to promote?) and
+# drift detection (has anyone changed Purview outside the pipeline?). Uses only the reader identity.
+# A non-zero drift result fails the run so that pipeline failure notifications reach the owning team.
+trigger: none
+pr: none
+
+schedules:
+  - cron: '17 5 * * *'
+    displayName: Daily simulation report and drift check
+    branches: { include: [main] }
+    always: true
+
+resources:
+  repositories:
+    - repository: ppdf
+      type: github
+      name: therealtadda/purview-policy-deployment-framework
+      endpoint: github-ppdf
+      ref: refs/heads/main             # pin a release tag in production
+
+stages:
+  - template: pipelines/azure-devops/templates/stage-plan.yml@ppdf
+    parameters:
+      stageName: SimReport_prod
+      environment: prod
+      command: simulation-report
+      readerServiceConnection: sc-ppdf-prod-reader
+      failOnBlocked: false
+
+  - template: pipelines/azure-devops/templates/stage-plan.yml@ppdf
+    parameters:
+      stageName: Drift_prod
+      environment: prod
+      command: drift
+      readerServiceConnection: sc-ppdf-prod-reader
+      failOnBlocked: false
+
+  - stage: Report
+    displayName: Report drift
+    dependsOn: [Drift_prod]
+    condition: always()
+    variables:
+      driftExit: $[ stageDependencies.Drift_prod.Plan.outputs['ppdf.exit_code'] ]
+    jobs:
+      - job: Report
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - checkout: none
+          - pwsh: |
+              switch ($env:DRIFTEXIT) {
+                '0' { Write-Host 'No drift detected.' }
+                '2' { Write-Host '##vso[task.logissue type=error]Drift detected in prod. Download the drift artifact for details, then reconcile via a PR (adopt the change) or a re-apply (revert it).'; exit 1 }
+                '3' { Write-Host '##vso[task.logissue type=error]Drift check found blocked/unmanaged differences that need human review.'; exit 1 }
+                default { Write-Host "##vso[task.logissue type=error]Drift check did not complete (exit '$($env:DRIFTEXIT)')."; exit 1 }
+              }
+            displayName: Evaluate drift result
